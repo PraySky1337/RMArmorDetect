@@ -1,0 +1,8 @@
+model: ultralytics/cfg/models/11/yolo11-pose.yaml  # model config or checkpoint path
+epochs: 50
+batch: 256
+imgsz: 640
+device: "0, 1"  # set to 'cpu' or CUDA device index/list
+train_ratio: 0.9  # train/val split ratio when auto-splitting images
+seed: 0
+tensorboard: true

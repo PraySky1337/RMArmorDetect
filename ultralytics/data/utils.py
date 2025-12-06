@@ -207,6 +207,25 @@ def verify_image_label(args: tuple) -> list:
                     segments = [np.array(x[1:], dtype=np.float32).reshape(-1, 2) for x in lb]  # (cls, xy1...)
                     lb = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)  # (cls, xywh)
                 lb = np.array(lb, dtype=np.float32)
+                # If pose labels come without bboxes (format: cls kpts...), derive xywh from keypoints
+                if keypoint and lb.size and lb.shape[1] == (1 + nkpt * ndim):
+                    kpts = lb[:, 1:].reshape(-1, nkpt, ndim)
+                    xy = kpts[..., :2]
+                    # only use visible keypoints to form the box when visibility is provided
+                    if ndim == 3:
+                        vis = kpts[..., 2] > 0
+                        xy = np.where(vis[..., None], xy, np.nan)
+                    x0 = np.nanmin(xy[..., 0], axis=1)
+                    y0 = np.nanmin(xy[..., 1], axis=1)
+                    x1 = np.nanmax(xy[..., 0], axis=1)
+                    y1 = np.nanmax(xy[..., 1], axis=1)
+                    # handle all-NaN (no visible kpts) by zeroing the box to fail later validation cleanly
+                    invalid = np.isnan(x0 + x1 + y0 + y1)
+                    cxy = np.stack(((x0 + x1) / 2, (y0 + y1) / 2), axis=1)
+                    wh = np.stack((x1 - x0, y1 - y0), axis=1)
+                    bbox = np.concatenate((cxy, wh), axis=1)
+                    bbox[invalid] = 0.0
+                    lb = np.concatenate((lb[:, :1], bbox, lb[:, 1:]), axis=1)
             if nl := len(lb):
                 if keypoint:
                     assert lb.shape[1] == (5 + nkpt * ndim), f"labels require {(5 + nkpt * ndim)} columns each"
