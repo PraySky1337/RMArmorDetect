@@ -9,6 +9,11 @@ import yaml
 from ultralytics import YOLO
 from ultralytics.utils import SETTINGS
 
+SETTINGS.update({
+    "datasets_dir": "/home/rry/RMArmorPose/datasets",
+    "weights_dir": "/home/rry/RMArmorPose/weights",
+    "runs_dir": "/home/rry/RMArmorPose/runs",
+})
 
 ROOT = Path(__file__).resolve().parent
 IMG_DIR = ROOT / "datasets" / "images"
@@ -167,18 +172,24 @@ def write_data_yaml(names: dict[int, str], kpt_shape: tuple[int, int], train_txt
     DATA_YAML.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     return DATA_YAML
 
-
 def main() -> None:
     cfg = load_train_cfg()
+
+    # 是否启用 TensorBoard
     if cfg.get("tensorboard", True):
         SETTINGS.update({"tensorboard": True})
 
+    # 从标签自动推断类别与关键点形状
     classes_present, kpt_shape = infer_dataset_info(LBL_DIR)
     missing = [i for i in range(len(CLASS_NAMES)) if i not in classes_present]
     if missing:
-        print(f"Note: {len(missing)} classes not present in labels (kept anyway): {missing[:10]}{'...' if len(missing) > 10 else ''}")
+        print(
+            f"Note: {len(missing)} classes not present in labels (kept anyway): "
+            f"{missing[:10]}{'...' if len(missing) > 10 else ''}"
+        )
     names = {i: name for i, name in enumerate(CLASS_NAMES)}
 
+    # 生成 train/val 列表
     train_txt, val_txt = make_splits(
         IMG_DIR,
         train_ratio=float(cfg.get("train_ratio", 0.9)),
@@ -186,14 +197,71 @@ def main() -> None:
     )
     data_yaml = write_data_yaml(names, kpt_shape, train_txt, val_txt)
 
-    # Uses a local model config to avoid downloading weights; swap to a .pt to finetune instead.
+    # 模型，可换成 .pt 微调
     model = YOLO(cfg.get("model", "ultralytics/cfg/models/11/yolo11-pose.yaml"))
+
+    # ----------------- 训练参数大集合 -----------------
     model.train(
+        # 基本数据设置
         data=str(data_yaml),
         epochs=int(cfg.get("epochs", 50)),
-        imgsz=cfg.get("imgsz", 640),
-        batch=cfg.get("batch", 16),
-        device=cfg.get("device", 0),  # change to 'cpu' or other device index/list as needed
+        imgsz=int(cfg.get("imgsz", 640)),
+        batch=int(cfg.get("batch", 16)),
+        device=cfg.get("device", 0),
+        workers=int(cfg.get("workers", 8)),
+        cache=cfg.get("cache", False),
+
+        # 优化器与学习率相关
+        optimizer=cfg.get("optimizer", "AdamW"),   # 'SGD', 'Adam', 'AdamW'
+        lr0=float(cfg.get("lr0", 1e-3)),          # 初始学习率
+        lrf=float(cfg.get("lrf", 0.01)),          # 最终学习率比例
+        momentum=float(cfg.get("momentum", 0.937)),
+        weight_decay=float(cfg.get("weight_decay", 5e-4)),
+        warmup_epochs=float(cfg.get("warmup_epochs", 3.0)),
+        warmup_momentum=float(cfg.get("warmup_momentum", 0.8)),
+        warmup_bias_lr=float(cfg.get("warmup_bias_lr", 0.1)),
+        cos_lr=bool(cfg.get("cos_lr", True)),     # 余弦退火
+
+        # pose 相关 loss 权重（官方推荐：pose=12.0, kobj=2.0）
+        box=float(cfg.get("box", 7.5)),
+        cls=float(cfg.get("cls", 0.5)),
+        dfl=float(cfg.get("dfl", 1.5)),
+        pose=float(cfg.get("pose", 12.0)),
+        kobj=float(cfg.get("kobj", 2.0)),
+
+        # 数据增强超参数（可按需要精调）
+        hsv_h=float(cfg.get("hsv_h", 0.015)),
+        hsv_s=float(cfg.get("hsv_s", 0.7)),
+        hsv_v=float(cfg.get("hsv_v", 0.4)),
+        degrees=float(cfg.get("degrees", 0.0)),
+        translate=float(cfg.get("translate", 0.1)),
+        scale=float(cfg.get("scale", 0.5)),
+        shear=float(cfg.get("shear", 0.0)),
+        perspective=float(cfg.get("perspective", 0.0)),
+        flipud=float(cfg.get("flipud", 0.0)),
+        fliplr=float(cfg.get("fliplr", 0.5)),
+        mosaic=float(cfg.get("mosaic", 1.0)),
+        mixup=float(cfg.get("mixup", 0.0)),
+        copy_paste=float(cfg.get("copy_paste", 0.0)),
+        erasing=float(cfg.get("erasing", 0.4)),
+        close_mosaic=int(cfg.get("close_mosaic", 10)),  # 最后 N 个 epoch 关闭 mosaic
+
+        # 训练流程控制
+        patience=int(cfg.get("patience", 50)),     # 早停
+        resume=cfg.get("resume", False),
+        pretrained=cfg.get("pretrained", True),
+        amp=cfg.get("amp", True),                  # 混合精度
+        deterministic=cfg.get("deterministic", False),
+        seed=int(cfg.get("seed", 0)),
+        val=cfg.get("val", True),                  # 训练过程中是否做 val
+
+        # 日志 & 权重保存
+        project=str(cfg.get("project", ROOT / "runs" / "pose")),
+        name=str(cfg.get("name", "rmarmor-pose")),
+        exist_ok=cfg.get("exist_ok", False),
+        save=cfg.get("save", True),
+        save_period=int(cfg.get("save_period", -1)),   # 每多少 epoch 额外存一次
+        plots=cfg.get("plots", True),                  # 保存训练曲线图片
     )
 
 
