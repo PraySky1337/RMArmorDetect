@@ -184,11 +184,70 @@ class KeypointLoss(nn.Module):
         self, pred_kpts: torch.Tensor, gt_kpts: torch.Tensor, kpt_mask: torch.Tensor, area: torch.Tensor
     ) -> torch.Tensor:
         """Calculate keypoint loss factor and Euclidean distance loss for keypoints."""
+        #欧氏距离平方
         d = (pred_kpts[..., 0] - gt_kpts[..., 0]).pow(2) + (pred_kpts[..., 1] - gt_kpts[..., 1]).pow(2)
+        #关键点有效性归一化因子（对有效关键点少的样本放大补偿）
         kpt_loss_factor = kpt_mask.shape[1] / (torch.sum(kpt_mask != 0, dim=1) + 1e-9)
+        #关键点误差归一化公式 
+        s = torch.sqrt(area).unsqueeze(-1)  # (N,1)
+        e = d / (2 * (s * self.sigmas) ** 2 + 1e-9)
         # e = d / (2 * (area * self.sigmas) ** 2 + 1e-9)  # from formula
-        e = d / ((2 * self.sigmas).pow(2) * (area + 1e-9) * 2)  # from cocoeval
+        # e = d / ((2 * self.sigmas).pow(2) * (area + 1e-9) * 2)  # from cocoeval
         return (kpt_loss_factor.view(-1, 1) * ((1 - torch.exp(-e)) * kpt_mask)).mean()
+
+# class KeypointLoss(nn.Module):
+#     """Criterion class for computing keypoint losses (pixel-coordinate version)."""
+
+#     def __init__(self, sigmas: torch.Tensor) -> None:
+#         """Initialize the KeypointLoss class with keypoint sigmas (in pixel units)."""
+#         super().__init__()
+#         self.sigmas = sigmas  # shape: (num_keypoints,)
+
+#     def forward(
+#         self, pred_kpts: torch.Tensor, gt_kpts: torch.Tensor, kpt_mask: torch.Tensor, area: torch.Tensor = None
+#     ) -> torch.Tensor:
+#         """
+#         Calculate keypoint loss factor and Euclidean distance loss for keypoints.
+
+#         Args:
+#             pred_kpts: (batch, num_kpts, 2) tensor, predicted keypoints in pixel coordinates
+#             gt_kpts: (batch, num_kpts, 2) tensor, ground truth keypoints in pixel coordinates
+#             kpt_mask: (batch, num_kpts) tensor, 1 if keypoint is visible, 0 otherwise
+#             area: optional (batch,) tensor, area for each person in pixels (if None, compute from keypoints)
+#         """
+#         batch_size, num_kpts, _ = pred_kpts.shape
+
+#         # --- 调试打印 ---
+#         # print("pred_kpts[0]:", pred_kpts[0])
+#         # print("gt_kpts[0]:", gt_kpts[0])
+#         # print("kpt_mask[0]:", kpt_mask[0])
+
+#         # --- 计算目标面积（如果没有传入） ---
+#         if area is None:
+#             x_min, _ = gt_kpts[..., 0].min(dim=1)
+#             x_max, _ = gt_kpts[..., 0].max(dim=1)
+#             y_min, _ = gt_kpts[..., 1].min(dim=1)
+#             y_max, _ = gt_kpts[..., 1].max(dim=1)
+#             area = (x_max - x_min) * (y_max - y_min)
+#         print("area[0]:", area[0])
+
+#         # --- 欧氏距离平方 ---
+#         d = (pred_kpts[..., 0] - gt_kpts[..., 0]).pow(2) + (pred_kpts[..., 1] - gt_kpts[..., 1]).pow(2)
+
+#         # --- 有效关键点归一化因子 ---
+#         kpt_loss_factor = num_kpts / (torch.sum(kpt_mask != 0, dim=1) + 1e-9)
+
+#         # --- 广播 sigmas 和 area ---
+#         sigmas = self.sigmas.view(1, num_kpts)  # (1, num_kpts)
+#         area = area.view(batch_size, 1)        # (batch, 1)
+
+#         # --- 关键点误差归一化（pixel coordinate version） ---
+#         e = d / (2 * (area * sigmas) ** 2 + 1e-9)
+
+#         # --- loss ---
+#         loss = kpt_loss_factor.view(-1, 1) * ((1 - torch.exp(-e)) * kpt_mask)
+#         return loss.mean()
+
 
 
 class v8DetectionLoss:
@@ -481,167 +540,394 @@ class v8SegmentationLoss(v8DetectionLoss):
                 loss += (proto * 0).sum() + (pred_masks * 0).sum()  # inf sums may lead to nan loss
 
         return loss / fg_mask.sum()
-
-
+    
 class v8PoseLoss(v8DetectionLoss):
-    """Criterion class for computing training losses for YOLOv8 pose estimation."""
+    """Criterion class for YOLOv8 Pose with dual classification branches (number and color).
 
-    def __init__(self, model):  # model must be de-paralleled
-        """Initialize v8PoseLoss with model parameters and keypoint-specific loss functions."""
-        super().__init__(model)
-        self.kpt_shape = model.model[-1].kpt_shape
-        self.bce_pose = nn.BCEWithLogitsLoss()
-        is_pose = self.kpt_shape == [17, 3]
-        nkpt = self.kpt_shape[0]  # number of keypoints
-        sigmas = torch.from_numpy(OKS_SIGMA).to(self.device) if is_pose else torch.ones(nkpt, device=self.device) / nkpt
+    Keypoint-only mode (no bbox regression).
+
+    Label format: color cls x1 y1 x2 y2 x3 y3 x4 y4
+    where:
+    - color: color class (0-3: R, B, N, P)
+    - cls: number class (0-7: numbers 1-8)
+    - x1-x4, y1-y4: 4 corner keypoints
+    """
+
+    def __init__(self, model):
+        """Initialize v8PoseLoss with keypoint and dual classification branches."""
+        device = next(model.parameters()).device 
+        h = model.args  # hyperparameters超参数集合
+
+        pose_layer = None
+        for layer in reversed(model.model):
+            if hasattr(layer, "kpt_shape"):
+                pose_layer = layer
+                break
+        if pose_layer is None:
+            raise ValueError("Cannot find a layer with kpt_shape in model.model")
+
+        self.kpt_shape = pose_layer.kpt_shape
+        self.nc_num = pose_layer.nc_num  
+        self.nc_color = pose_layer.nc_color  
+        self.nc = self.nc_num  
+
+        self.device = device
+        self.hyp = h
+        self.pose_layer = pose_layer  # Keep reference to get stride dynamically
+        
+
+        # Keypoint loss和分类损失初始化
+        nkpt = self.kpt_shape[0]
+        sigmas = torch.ones(nkpt, device=device) / nkpt #每个关键点的标准差，影响OKS权重
         self.keypoint_loss = KeypointLoss(sigmas=sigmas)
 
-    def __call__(self, preds: Any, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-        """Calculate the total loss and detach it for pose estimation."""
-        loss = torch.zeros(5, device=self.device)  # box, cls, dfl, kpt_location, kpt_visibility
-        feats, pred_kpts = preds if isinstance(preds[0], list) else preds[1]
-        pred_distri, pred_scores = torch.cat([xi.view(feats[0].shape[0], self.no, -1) for xi in feats], 2).split(
-            (self.reg_max * 4, self.nc), 1
-        )
+        # Classification losses for both branches
+        self.bce_num = nn.BCEWithLogitsLoss(reduction="none")  # number branch
+        self.bce_color = nn.BCEWithLogitsLoss(reduction="none")  # color branch
 
-        # B, grids, ..
-        pred_scores = pred_scores.permute(0, 2, 1).contiguous()
-        pred_distri = pred_distri.permute(0, 2, 1).contiguous()
-        pred_kpts = pred_kpts.permute(0, 2, 1).contiguous()
+    #前向计算
+    def __call__(self, preds, batch):
+        """
+        Calculate losses for keypoint-only pose detection with dual classification branches.
 
-        dtype = pred_scores.dtype
-        imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]  # image size (h,w)
-        anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
+        preds: (feats, (cls_num, cls_color, kpt)) during inference
+        batch: contains batch_idx, cls (number), keypoints, color
+        loss: [pose, kobj, cls_num, cls_color] (no bbox/dfl losses)
+        """
+        loss = torch.zeros(4, device=self.device) #初始化损失[pose, kobj, cls_num, cls_color]
 
-        # Targets
-        batch_size = pred_scores.shape[0]
+        # 预测解包
+        # Training mode: preds = (feats_list, (cls_num, cls_color, kpt))
+        # Validation mode: preds = (combined_output, (feats_list, (cls_num, cls_color, kpt)))
+        if isinstance(preds[0], list):
+            # Training mode
+            feats = preds[0] #特征图列表
+            cls_num_pred, cls_color_pred, kpt_pred = preds[1]
+        else:
+            # Validation mode - preds[1][0] should be feats list
+            feats = preds[1][0]
+            cls_num_pred, cls_color_pred, kpt_pred = preds[1][1]
+
+        #permute调整维度方便按anchor计算损失
+        cls_num_pred = cls_num_pred.permute(0, 2, 1)  # (bs, na, nc_num)
+        cls_color_pred = cls_color_pred.permute(0, 2, 1)  # (bs, na, nc_color)
+        kpt_pred = kpt_pred.permute(0, 2, 1)  # (bs, na, nk)
+
+        # Get stride dynamically from pose_layer (it's computed during first forward pass)
+        #动态计算stride，stride用于将anchor映射回像素坐标，如果低碳日的尚未初始化就按img_size / feat_map_size 动态计算
+        stride = self.pose_layer.stride
+        if stride.sum() == 0:
+            # Fallback: compute stride from image size and feature map size
+            img_h, img_w = batch["img"].shape[2:]  # (bs, c, h, w)
+            stride = torch.tensor([img_h / f.shape[2] for f in feats], device=self.device)
+            # print(f"[DEBUG] Computed stride from img/feats: {stride.tolist()}")
+
+
+        imgsz = torch.tensor(feats[0].shape[2:], device=self.device) * stride[0]
+        # Use actual image size for clamp bounds (more accurate than feats * stride)
+        img_h, img_w = batch["img"].shape[2:]
+        self.imgsz = torch.tensor([img_h, img_w], device=self.device)
+        anchor_points, stride_tensor = make_anchors(feats, stride, 0.5)
+
+        # ---------- process targets ----------
+        batch_size = cls_num_pred.shape[0]
         batch_idx = batch["batch_idx"].view(-1, 1)
-        targets = torch.cat((batch_idx, batch["cls"].view(-1, 1), batch["bboxes"]), 1)
-        targets = self.preprocess(targets, batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
-        gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
-        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)
+        gt_cls_num = batch["cls"].view(-1, 1)
 
-        # Pboxes
-        pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
-        pred_kpts = self.kpts_decode(anchor_points, pred_kpts.view(batch_size, -1, *self.kpt_shape))  # (b, h*w, 17, 3)
+        num_anchors = anchor_points.shape[0]
 
-        _, target_bboxes, target_scores, fg_mask, target_gt_idx = self.assigner(
-            pred_scores.detach().sigmoid(),
-            (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
-            anchor_points * stride_tensor,
-            gt_labels,
-            gt_bboxes,
-            mask_gt,
-        )
+        fg_mask = torch.zeros(batch_size, num_anchors, device=self.device, dtype=torch.bool)
+        target_gt_idx = torch.full((batch_size, num_anchors), -1, device=self.device, dtype=torch.long)
+        target_scores = torch.zeros(batch_size, num_anchors, 1, device=self.device)
 
-        target_scores_sum = max(target_scores.sum(), 1)
+        if "keypoints" in batch:
+            keypoints = batch["keypoints"].to(self.device).float()
 
-        # Cls loss
-        # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
-        loss[3] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+            # if keypoints.numel() == 0:
+            #     # No keypoints in this batch - return zero losses
+            #     return loss.sum() * 0, torch.zeros(4, device=self.device)
 
-        # Bbox loss
-        if fg_mask.sum():
-            target_bboxes /= stride_tensor
-            loss[0], loss[4] = self.bbox_loss(
-                pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask
-            )
-            keypoints = batch["keypoints"].to(self.device).float().clone()
-            keypoints[..., 0] *= imgsz[1]
-            keypoints[..., 1] *= imgsz[0]
+            keypoints_px = keypoints.clone()
+            keypoints_px[..., 0] *= imgsz[1]
+            keypoints_px[..., 1] *= imgsz[0]
 
-            loss[1], loss[2] = self.calculate_keypoints_loss(
-                fg_mask, target_gt_idx, keypoints, batch_idx, stride_tensor, target_bboxes, pred_kpts
-            )
+            # anchor_points is in feature map coordinates, need to multiply by stride
+            anchor_points_px = anchor_points * stride_tensor  # (na, 2) * (na, 1) -> (na, 2)
 
-        loss[0] *= self.hyp.box  # box gain
-        loss[1] *= self.hyp.pose  # pose gain
-        loss[2] *= self.hyp.kobj  # kobj gain
-        loss[3] *= self.hyp.cls  # cls gain
-        loss[4] *= self.hyp.dfl  # dfl gain
+            batch_idx_flat = batch_idx.view(-1)
+            gt_kpt_centers = keypoints_px.mean(dim=1)  # (num_gt, 2) GT关键点中心
 
-        return loss * batch_size, loss.detach()  # loss(box, cls, dfl)
+            batch_gt_counters = {}  # batch_id -> current count
+            topk = 10  # 选top-k最近anchor作为正样本
 
-    @staticmethod
-    def kpts_decode(anchor_points: torch.Tensor, pred_kpts: torch.Tensor) -> torch.Tensor:
-        """Decode predicted keypoints to image coordinates."""
-        y = pred_kpts.clone()
-        y[..., :2] *= 2.0
-        y[..., 0] += anchor_points[:, [0]] - 0.5
-        y[..., 1] += anchor_points[:, [1]] - 0.5
-        return y
+            #计算每个GT到所有anchor的真实距离
+            for gt_idx, (b_idx, center) in enumerate(zip(batch_idx_flat.tolist(), gt_kpt_centers.tolist())):
+                b_idx = int(b_idx)
 
-    def calculate_keypoints_loss(
-        self,
-        masks: torch.Tensor,
-        target_gt_idx: torch.Tensor,
-        keypoints: torch.Tensor,
-        batch_idx: torch.Tensor,
-        stride_tensor: torch.Tensor,
-        target_bboxes: torch.Tensor,
-        pred_kpts: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Calculate the keypoints loss for the model.
+                # Get per-batch index
+                if b_idx not in batch_gt_counters:
+                    batch_gt_counters[b_idx] = 0
+                per_batch_idx = batch_gt_counters[b_idx]
+                batch_gt_counters[b_idx] += 1
 
-        This function calculates the keypoints loss and keypoints object loss for a given batch. The keypoints loss is
-        based on the difference between the predicted keypoints and ground truth keypoints. The keypoints object loss is
-        a binary classification loss that classifies whether a keypoint is present or not.
+                # Find top-k closest anchors to this keypoint center (both in pixel coords)
+                center_tensor = torch.tensor(center, device=self.device)
+                dists = torch.norm(anchor_points_px - center_tensor, dim=1)
+
+                # Get top-k closest anchors
+                k = min(topk, len(dists))
+                _, topk_indices = dists.topk(k, largest=False)
+
+                for anchor_idx in topk_indices:
+                    anchor_idx = int(anchor_idx.item())
+                    # Only assign if not already assigned or if this GT is closer
+                    if not fg_mask[b_idx, anchor_idx]:
+                        fg_mask[b_idx, anchor_idx] = True
+                        target_gt_idx[b_idx, anchor_idx] = per_batch_idx
+                        target_scores[b_idx, anchor_idx, 0] = 1.0
+
+            # ---------- keypoint loss ----------
+            num_fg = fg_mask.sum().item()
+        
+            if fg_mask.sum() > 0:
+                # Decode predicted keypoints to pixel coordinates for loss computation
+                # kpt_pred is raw network output, need to decode like in head.py
+                kpt_pred_decoded = self.decode_keypoints(kpt_pred, anchor_points, stride_tensor) #将网络输出映射回像素坐标
+
+                loss[0], loss[1] = self.calculate_keypoints_loss(
+                    fg_mask, target_gt_idx, keypoints_px,
+                    batch_idx, stride_tensor, kpt_pred_decoded
+                )
+            else:
+                # No foreground anchors - use prediction tensor to maintain gradient graph
+                loss[0] = (kpt_pred * 0).sum()
+                loss[1] = (kpt_pred * 0).sum()
+
+                # Debug: print loss values
+                # if loss[0].item() == 0:
+                #     print(f"[DEBUG] pose_loss=0 but fg_mask.sum()={num_fg}")
+        else:
+            # No keypoints in batch - use prediction tensor to maintain gradient graph
+            loss[0] = (kpt_pred * 0).sum()
+            loss[1] = (kpt_pred * 0).sum()
+
+        # ---------- number class loss ----------
+        ts = max(target_scores.sum(), 1)
+
+        # Create one-hot encoded class targets for foreground anchors
+        num_class_targets = torch.zeros_like(cls_num_pred)
+        # Use batch_idx defined earlier (same length as gt_cls_num)
+        batch_idx_for_cls = batch_idx.view(-1)
+
+        for b in range(batch_size):
+            valid_mask = fg_mask[b]
+            if valid_mask.sum() > 0:
+                batch_mask = (batch_idx_for_cls == b)
+                batch_cls = gt_cls_num[batch_mask]
+                gt_indices = target_gt_idx[b][valid_mask]
+
+                # 获取 valid_mask 为 True 的 anchor 索引
+                valid_anchor_indices = torch.where(valid_mask)[0]
+
+                for i, gt_idx in enumerate(gt_indices):
+                    gt_idx = int(gt_idx.item())
+                    if gt_idx >= 0 and gt_idx < len(batch_cls):
+                        class_id = int(batch_cls[gt_idx].item())
+                        if class_id < self.nc_num:
+                            anchor_idx = valid_anchor_indices[i]
+                            num_class_targets[b, anchor_idx, class_id] = 1.0
+
+
+        # Only compute cls loss for foreground anchors (avoid training model to output low conf for all)
+        # if fg_mask.sum() > 0:
+        #     fg_cls_pred = cls_num_pred[fg_mask]  # (num_fg, nc_num)
+        #     fg_cls_target = num_class_targets[fg_mask]  # (num_fg, nc_num)
+        #     # loss[2] = self.bce_num(fg_cls_pred, fg_cls_target).sum() / max(fg_mask.sum(), 1.0)
+        #     loss[2] = self.bce_num(fg_cls_pred, fg_cls_target).mean()
+        # else:
+        #     # Use prediction tensor to maintain gradient graph
+        #     loss[2] = (cls_num_pred * 0).sum()
+        # 加权loss：前景权重=1.0, 背景权重=0.25
+        weight = fg_mask.float() * 0.75 + 0.25  # fg=1.0, bg=0.25
+        loss[2] = (self.bce_num(cls_num_pred, num_class_targets) *
+        weight.unsqueeze(-1)).sum() / max(num_anchors, 1.0)
+       
+
+
+        # ---------- color class loss ----------
+        if "color" in batch:
+            gt_color = batch["color"].view(-1)  # color class (0-3), flatten to 1D
+            color_targets = torch.zeros_like(cls_color_pred)
+
+           
+            for b in range(batch_size):
+                valid_mask = fg_mask[b]
+                if valid_mask.sum() > 0:
+                    batch_mask = (batch_idx_for_cls == b)
+                    batch_color = gt_color[batch_mask]
+                    gt_indices = target_gt_idx[b][valid_mask]
+
+                    # 获取 valid_mask 为 True 的 anchor 索引
+                    valid_anchor_indices = torch.where(valid_mask)[0]
+
+                    for i, gt_idx in enumerate(gt_indices):
+                        gt_idx = int(gt_idx.item())
+                        if gt_idx >= 0 and gt_idx < len(batch_color):
+                            color_id = int(batch_color[gt_idx].item())
+                            if color_id < self.nc_color:
+                                anchor_idx = valid_anchor_indices[i]
+                                color_targets[b, anchor_idx, color_id] = 1.0
+
+
+            # Only compute color loss for foreground anchors
+            if fg_mask.sum() > 0:
+                fg_color_pred = cls_color_pred[fg_mask]
+                fg_color_target = color_targets[fg_mask]
+                loss[3] = self.bce_color(fg_color_pred, fg_color_target).sum() / max(fg_mask.sum(), 1.0)
+            else:
+                # Use prediction tensor to maintain gradient graph
+                loss[3] = (cls_color_pred * 0).sum()
+        else:
+            # Use prediction tensor to maintain gradient graph
+            loss[3] = (cls_color_pred * 0).sum()
+
+        loss[0] *= self.hyp.pose     
+        loss[1] *= self.hyp.kobj      
+        loss[2] *= self.hyp.cls      
+        loss[3] *= getattr(self.hyp, "color", 1.0) 
+
+        return loss * batch_size, loss.detach()
+
+    def decode_keypoints(self, kpt_pred, anchor_points, stride_tensor):
+        """Decode raw keypoint predictions to pixel coordinates.
 
         Args:
-            masks (torch.Tensor): Binary mask tensor indicating object presence, shape (BS, N_anchors).
-            target_gt_idx (torch.Tensor): Index tensor mapping anchors to ground truth objects, shape (BS, N_anchors).
-            keypoints (torch.Tensor): Ground truth keypoints, shape (N_kpts_in_batch, N_kpts_per_object, kpts_dim).
-            batch_idx (torch.Tensor): Batch index tensor for keypoints, shape (N_kpts_in_batch, 1).
-            stride_tensor (torch.Tensor): Stride tensor for anchors, shape (N_anchors, 1).
-            target_bboxes (torch.Tensor): Ground truth boxes in (x1, y1, x2, y2) format, shape (BS, N_anchors, 4).
-            pred_kpts (torch.Tensor): Predicted keypoints, shape (BS, N_anchors, N_kpts_per_object, kpts_dim).
+            kpt_pred: (bs, na, nk) - raw network output
+            anchor_points: (na, 2) - anchor coordinates
+            stride_tensor: (na, 1) - stride for each anchor
 
         Returns:
-            kpts_loss (torch.Tensor): The keypoints loss.
-            kpts_obj_loss (torch.Tensor): The keypoints object loss.
+            decoded: (bs, na, nk) - keypoints in pixel coordinates
         """
-        batch_idx = batch_idx.flatten()
-        batch_size = len(masks)
+        bs, na, nk = kpt_pred.shape
+        nkpt = self.kpt_shape[0]
+        ndim = self.kpt_shape[1]
 
-        # Find the maximum number of keypoints in a single image
-        max_kpts = torch.unique(batch_idx, return_counts=True)[1].max()
+        # Reshape to (bs, na, nkpt, ndim)
+        kpt = kpt_pred.view(bs, na, nkpt, ndim)
 
-        # Create a tensor to hold batched keypoints
-        batched_keypoints = torch.zeros(
-            (batch_size, max_kpts, keypoints.shape[1], keypoints.shape[2]), device=keypoints.device
-        )
+        # Decode: (pred * 2.0 + (anchor - 0.5)) * stride
+        # anchor_points: (na, 2), stride_tensor: (na, 1)
+        anchor_x = anchor_points[:, 0].view(1, -1, 1)  # (1, na, 1)
+        anchor_y = anchor_points[:, 1].view(1, -1, 1)  # (1, na, 1)
+        strides = stride_tensor.view(1, -1, 1)  # (1, na, 1)
 
-        # TODO: any idea how to vectorize this?
-        # Fill batched_keypoints with keypoints based on batch_idx
-        for i in range(batch_size):
-            keypoints_i = keypoints[batch_idx == i]
-            batched_keypoints[i, : keypoints_i.shape[0]] = keypoints_i
+        # Use non-inplace operations to avoid breaking gradient computation
+        kpt_x = (kpt[..., 0] * 2.0 + (anchor_x - 0.5)) * strides
+        kpt_y = (kpt[..., 1] * 2.0 + (anchor_y - 0.5)) * strides
 
-        # Expand dimensions of target_gt_idx to match the shape of batched_keypoints
-        target_gt_idx_expanded = target_gt_idx.unsqueeze(-1).unsqueeze(-1)
+        # Clamp keypoints to image bounds (non-inplace)
+        if hasattr(self, 'imgsz') and self.imgsz is not None:
+            kpt_x = kpt_x.clamp(0, self.imgsz[1])
+            kpt_y = kpt_y.clamp(0, self.imgsz[0])
 
-        # Use target_gt_idx_expanded to select keypoints from batched_keypoints
-        selected_keypoints = batched_keypoints.gather(
-            1, target_gt_idx_expanded.expand(-1, -1, keypoints.shape[1], keypoints.shape[2])
-        )
+        # Stack back to (bs, na, nkpt, 2)
+        kpt = torch.stack([kpt_x, kpt_y], dim=-1)
 
-        # Divide coordinates by stride
-        selected_keypoints[..., :2] /= stride_tensor.view(1, -1, 1, 1)
+        return kpt.view(bs, na, nk)
 
-        kpts_loss = 0
-        kpts_obj_loss = 0
+    def calculate_keypoints_loss(self, fg_mask, target_gt_idx, keypoints, batch_idx,
+                                 stride_tensor, pred_kpts):
+        """Calculate keypoint loss (without bbox normalization).
 
-        if masks.any():
-            gt_kpt = selected_keypoints[masks]
-            area = xyxy2xywh(target_bboxes[masks])[:, 2:].prod(1, keepdim=True)
-            pred_kpt = pred_kpts[masks]
-            kpt_mask = gt_kpt[..., 2] != 0 if gt_kpt.shape[-1] == 3 else torch.full_like(gt_kpt[..., 0], True)
-            kpts_loss = self.keypoint_loss(pred_kpt, gt_kpt, kpt_mask, area)  # pose loss
+        Args:
+            fg_mask: foreground mask (bs, na)
+            target_gt_idx: ground truth indices (bs, na) - indices into per-batch GT
+            keypoints: gt keypoints (total_objects, nkpt, ndim) - all batches concatenated, in pixel coords
+            batch_idx: batch indices (total_objects,) - which batch each GT belongs to
+            stride_tensor: stride tensor (na, 1) - stride for each anchor
+            pred_kpts: predicted keypoints (bs, na, nk)
+        """
+       
+        loss_pose = torch.zeros(1, device=self.device)
+        loss_kobj = torch.zeros(1, device=self.device)
 
-            if pred_kpt.shape[-1] == 3:
-                kpts_obj_loss = self.bce_pose(pred_kpt[..., 2], kpt_mask.float())  # keypoint obj loss
+        # if fg_mask.sum() == 0 or keypoints.numel() == 0:
+        #     print(f"[DEBUG] Early return: fg_mask.sum()={fg_mask.sum()}, keypoints.numel()={keypoints.numel()}")
+        #     return loss_pose, loss_kobj
 
-        return kpts_loss, kpts_obj_loss
+        bs, na, nk = pred_kpts.shape
+        nkpt = self.kpt_shape[0]
+        ndim = self.kpt_shape[1]
+
+        # Get predictions for foreground anchors
+        pred_kpts_fg = pred_kpts[fg_mask]  # (fg_count, nk)
+        pred_kpts_fg = pred_kpts_fg.view(-1, nkpt, ndim)  # (fg_count, nkpt, ndim)
+
+        # Build target keypoints for each foreground anchor
+        target_kpts_list = []
+        stride_list = []
+        areas_list = []
+        batch_idx_flat = batch_idx.view(-1)
+
+        for b in range(bs):
+            # Get mask of GT objects belonging to this batch
+            batch_mask = (batch_idx_flat == b)
+            batch_kpts = keypoints[batch_mask]  # (num_gt_in_batch, nkpt, ndim)
+
+            # Get foreground anchors for this batch
+            fg_in_batch = fg_mask[b]  # (na,)
+            gt_indices = target_gt_idx[b][fg_in_batch]  # indices into batch_kpts
+            strides_in_batch = stride_tensor.view(-1)[fg_in_batch]  # strides for fg anchors
+
+            for i, gt_idx in enumerate(gt_indices):
+                gt_idx = int(gt_idx.item())
+                if 0 <= gt_idx < len(batch_kpts):
+                    kpts = batch_kpts[gt_idx]  # (nkpt, ndim)
+                    target_kpts_list.append(kpts)
+                    stride_list.append(strides_in_batch[i])
+
+                    # Calculate area from keypoint bounding box
+                    kpt_xs = kpts[:, 0]
+                    kpt_ys = kpts[:, 1]
+                    w = (kpt_xs.max() - kpt_xs.min()).clamp(min=1.0)
+                    h = (kpt_ys.max() - kpt_ys.min()).clamp(min=1.0)
+                    area = w * h
+                    areas_list.append(area)
+
+        # if len(target_kpts_list) == 0:
+        #     print(f"[DEBUG] target_kpts_list is empty!")
+        #     return loss_pose, loss_kobj
+
+        target_kpts = torch.stack(target_kpts_list)  # (fg_count, nkpt, ndim)
+        strides = torch.stack(stride_list).view(-1, 1, 1)  # (fg_count, 1, 1)
+        areas = torch.stack(areas_list)  # (fg_count,)
+
+       
+        if pred_kpts_fg.shape[0] != target_kpts.shape[0]:
+            # print(f"[DEBUG] Shape mismatch: pred={pred_kpts_fg.shape[0]}, target={target_kpts.shape[0]}")
+            return loss_pose, loss_kobj
+
+       
+        kpt_mask = torch.ones_like(target_kpts[..., 0], dtype=torch.float32)  # all keypoints visible (float for loss computation)
+        loss_pose = self.keypoint_loss(pred_kpts_fg, target_kpts, kpt_mask, areas.unsqueeze(-1))
+
+        if not torch.isfinite(loss_pose):
+            loss_pose = (pred_kpts_fg * 0).sum()
+
+        
+        with torch.no_grad():
+            d = (pred_kpts_fg[..., :2] - target_kpts[..., :2]).pow(2).sum(dim=-1)  # squared distances per keypoint
+            s = areas.unsqueeze(-1)  # (fg_count, 1)
+            kpt_oks = torch.exp(-d / (2 * s * (self.keypoint_loss.sigmas ** 2) + 1e-9))  # OKS per keypoint
+            oks = kpt_oks.mean(dim=-1)  # average OKS per anchor
+
+
+        # Since we don't have a separate objectness prediction, use classification confidence as proxy
+        loss_kobj = ((1.0 - oks) ** 2).mean() 
+
+        return loss_pose.unsqueeze(0), loss_kobj.unsqueeze(0)
+
 
 
 class v8ClassificationLoss:

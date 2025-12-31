@@ -10,7 +10,7 @@ from copy import deepcopy
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
 from typing import Any
-
+import torch
 import cv2
 import numpy as np
 from torch.utils.data import Dataset
@@ -242,8 +242,12 @@ class BaseDataset(Dataset):
                     im = cv2.resize(im, (w, h), interpolation=cv2.INTER_LINEAR)
             elif not (h0 == w0 == self.imgsz):  # resize by stretching image to square imgsz
                 im = cv2.resize(im, (self.imgsz, self.imgsz), interpolation=cv2.INTER_LINEAR)
+
+            # Handle grayscale images - convert to 3 channels
             if im.ndim == 2:
-                im = im[..., None]
+                im = cv2.cvtColor(im, cv2.COLOR_GRAY2BGR)
+            elif im.shape[2] == 1:
+                im = cv2.cvtColor(im, cv2.COLOR_GRAY2BGR)
 
             # Add to buffer if training with augmentations
             if self.augment:
@@ -374,25 +378,26 @@ class BaseDataset(Dataset):
         return self.transforms(self.get_image_and_label(index))
 
     def get_image_and_label(self, index: int) -> dict[str, Any]:
-        """Get and return label information from the dataset.
-
-        Args:
-            index (int): Index of the image to retrieve.
-
-        Returns:
-            (dict[str, Any]): Label dictionary with image and metadata.
-        """
-        label = deepcopy(self.labels[index])  # requires deepcopy() https://github.com/ultralytics/ultralytics/pull/1948
+        label = deepcopy(self.labels[index])
         label.pop("shape", None)  # shape is for rect, remove it
         label["img"], label["ori_shape"], label["resized_shape"] = self.load_image(index)
         label["ratio_pad"] = (
             label["resized_shape"][0] / label["ori_shape"][0],
             label["resized_shape"][1] / label["ori_shape"][1],
-        )  # for evaluation
+        )  
+        
+        if "cls" in label and "color" in label:
+            # 处理 cls 字段 - 保持原始数字类别
+            if isinstance(label["cls"], np.ndarray):
+                label["cls"] = torch.from_numpy(label["cls"])
+
+            # 处理 color 字段
+            if isinstance(label["color"], np.ndarray):
+                label["color"] = torch.from_numpy(label["color"])
+
         if self.rect:
             label["rect_shape"] = self.batch_shapes[self.batch[index]]
         return self.update_labels_info(label)
-
     def __len__(self) -> int:
         """Return the length of the labels list for the dataset."""
         return len(self.labels)

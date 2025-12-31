@@ -177,95 +177,213 @@ def verify_image(args: tuple) -> tuple:
     return (im_file, cls), nf, nc, msg
 
 
+# def verify_image_label(args: tuple) -> list:
+#     """Verify one image-label pair."""
+#     im_file, lb_file, prefix, keypoint, num_cls, nkpt, ndim, single_cls = args
+#     # Number (missing, found, empty, corrupt), message, segments, keypoints
+#     nm, nf, ne, nc, msg, segments, keypoints = 0, 0, 0, 0, "", [], None
+#     try:
+#         # Verify images
+#         im = Image.open(im_file)
+#         im.verify()  # PIL verify
+#         shape = exif_size(im)  # image size
+#         shape = (shape[1], shape[0])  # hw
+#         assert (shape[0] > 9) & (shape[1] > 9), f"image size {shape} <10 pixels"
+#         assert im.format.lower() in IMG_FORMATS, f"invalid image format {im.format}. {FORMATS_HELP_MSG}"
+#         if im.format.lower() in {"jpg", "jpeg"}:
+#             with open(im_file, "rb") as f:
+#                 f.seek(-2, 2)
+#                 if f.read() != b"\xff\xd9":  # corrupt JPEG
+#                     ImageOps.exif_transpose(Image.open(im_file)).save(im_file, "JPEG", subsampling=0, quality=100)
+#                     msg = f"{prefix}{im_file}: corrupt JPEG restored and saved"
+
+#         # Verify labels
+#         if os.path.isfile(lb_file):
+#             nf = 1  # label found
+#             with open(lb_file, encoding="utf-8") as f:
+#                 lb = [x.split() for x in f.read().strip().splitlines() if len(x)]
+#                 if any(len(x) > 6 for x in lb) and (not keypoint):  # is segment
+#                     classes = np.array([x[0] for x in lb], dtype=np.float32)
+#                     segments = [np.array(x[1:], dtype=np.float32).reshape(-1, 2) for x in lb]  # (cls, xy1...)
+#                     lb = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)  # (cls, xywh)
+#                 lb = np.array(lb, dtype=np.float32)
+#                 #If pose labels come without bboxes (format: cls kpts...), derive xywh from keypoints
+#                 if keypoint and lb.size and lb.shape[1] == (2 + nkpt * ndim):
+#                     kpts = lb[:, 2:].reshape(-1, nkpt, ndim)
+#                     xy = kpts[..., :2]
+#                     # only use visible keypoints to form the box when visibility is provided
+#                     if ndim == 3:
+#                         vis = kpts[..., 2] > 0
+#                         xy = np.where(vis[..., None], xy, np.nan)
+#                     x0 = np.nanmin(xy[..., 0], axis=1)
+#                     y0 = np.nanmin(xy[..., 1], axis=1)
+#                     x1 = np.nanmax(xy[..., 0], axis=1)
+#                     y1 = np.nanmax(xy[..., 1], axis=1)
+#                     # handle all-NaN (no visible kpts) by zeroing the box to fail later validation cleanly
+#                     invalid = np.isnan(x0 + x1 + y0 + y1)
+#                     cxy = np.stack(((x0 + x1) / 2, (y0 + y1) / 2), axis=1)
+#                     wh = np.stack((x1 - x0, y1 - y0), axis=1)
+#                     bbox = np.concatenate((cxy, wh), axis=1)
+#                     bbox[invalid] = 0.0
+#             if nl := len(lb):
+#                 if keypoint:
+#                     assert lb.shape[1] == (5 + nkpt * ndim), f"labels require {(5 + nkpt * ndim)} columns each"
+#                     points = lb[:, 5:].reshape(-1, ndim)[:, :2]
+#                 else:
+#                     assert lb.shape[1] == 5, f"labels require 5 columns, {lb.shape[1]} columns detected"
+#                     points = lb[:, 1:]
+#                 # Coordinate points check with 1% tolerance
+#                 assert points.max() <= 1.01, f"non-normalized or out of bounds coordinates {points[points > 1.01]}"
+#                 assert lb.min() >= -0.01, f"negative class labels or coordinate {lb[lb < -0.01]}"
+
+#                 # All labels
+#                 max_cls = 0 if single_cls else lb[:, 0].max()  # max label count
+#                 assert max_cls < num_cls, (
+#                     f"Label class {int(max_cls)} exceeds dataset class count {num_cls}. "
+#                     f"Possible class labels are 0-{num_cls - 1}"
+#                 )
+#                 _, i = np.unique(lb, axis=0, return_index=True)
+#                 if len(i) < nl:  # duplicate row check
+#                     lb = lb[i]  # remove duplicates
+#                     if segments:
+#                         segments = [segments[x] for x in i]
+#                     msg = f"{prefix}{im_file}: {nl - len(i)} duplicate labels removed"
+#             else:
+#                 ne = 1  # label empty
+#                 lb = np.zeros((0, (5 + nkpt * ndim) if keypoint else 5), dtype=np.float32)
+#         else:
+#             nm = 1  # label missing
+#             lb = np.zeros((0, (5 + nkpt * ndim) if keypoint else 5), dtype=np.float32)
+           
+#         if keypoint:
+#             keypoints = lb[:, 5:].reshape(-1, nkpt, ndim)
+#             if ndim == 2:
+#                 kpt_mask = np.where((keypoints[..., 0] < 0) | (keypoints[..., 1] < 0), 0.0, 1.0).astype(np.float32)
+#                 keypoints = np.concatenate([keypoints, kpt_mask[..., None]], axis=-1)  # (nl, nkpt, 3)
+#         lb = lb[:, :5]
+#         return im_file, lb, shape, segments, keypoints, nm, nf, ne, nc, msg
+#     except Exception as e:
+#         nc = 1
+#         msg = f"{prefix}{im_file}: ignoring corrupt image/label: {e}"
+#         return [None, None, None, None, None, nm, nf, ne, nc, msg]
+
+# def verify_image_label(args: tuple) -> list:
+#     """Verify one image-label pair and separate color from numeric cls."""
+#     im_file, lb_file, prefix, keypoint, num_cls, nkpt, ndim, single_cls = args
+#     nm, nf, ne, nc, msg, segments, keypoints = 0, 0, 0, 0, "", [], None
+#     color = np.zeros((0, 1), dtype=np.int64)
+
+#     try:
+#         # Verify image
+#         im = Image.open(im_file)
+#         im.verify()
+#         shape = exif_size(im)
+#         shape = (shape[1], shape[0])
+#         assert (shape[0] > 9) & (shape[1] > 9)
+#         assert im.format.lower() in IMG_FORMATS
+
+#         # Verify labels
+#         if os.path.isfile(lb_file):
+#             nf = 1
+#             with open(lb_file, encoding="utf-8") as f:
+#                 raw = [x.split() for x in f.read().strip().splitlines() if len(x)]
+#             if len(raw) > 0:
+#                 raw = np.array(raw, dtype=np.float32)
+#                 # separate color and cls
+#                 color = raw[:, 0:1].astype(np.int64)
+#                 cls = raw[:, 1:2].astype(np.float32)
+#                 # process bbox 4 points → cxcywh
+#                 pts = raw[:, 2:].reshape(-1, 4, 2)
+#                 x0 = pts[..., 0].min(1)
+#                 y0 = pts[..., 1].min(1)
+#                 x1 = pts[..., 0].max(1)
+#                 y1 = pts[..., 1].max(1)
+#                 cxy = np.stack(((x0 + x1)/2, (y0 + y1)/2), axis=1)
+#                 wh = np.stack((x1 - x0, y1 - y0), axis=1)
+#                 bbox = np.concatenate((cxy, wh), axis=1)
+#                 lb = np.concatenate((cls, bbox), axis=1)  # lb只包含数字类别 + bbox
+#             else:
+#                 ne = 1
+#                 lb = np.zeros((0, (5 + nkpt * ndim) if keypoint else 5), dtype=np.float32)
+#                 color = np.zeros((0,1), dtype=np.int64)
+#         else:
+#             nm = 1
+#             lb = np.zeros((0, (5 + nkpt * ndim) if keypoint else 5), dtype=np.float32)
+#             color = np.zeros((0,1), dtype=np.int64)
+
+#         if keypoint and lb.shape[0] > 0:
+#             keypoints = lb[:, 5:].reshape(-1, nkpt, ndim)
+#             if ndim == 2:
+#                 kpt_mask = np.where((keypoints[..., 0] < 0) | (keypoints[..., 1] < 0), 0.0, 1.0).astype(np.float32)
+#                 keypoints = np.concatenate([keypoints, kpt_mask[..., None]], axis=-1)
+
+#         lb = lb[:, :5]  # 保留 cls + bbox
+#         return im_file, lb, shape, segments, keypoints, color, nm, nf, ne, nc, msg
+
+#     except Exception as e:
+#         nc = 1
+#         msg = f"{prefix}{im_file}: ignoring corrupt image/label: {e}"
+#         return [None, None, None, None, None, np.zeros((0,1), dtype=np.int64), nm, nf, ne, nc, msg]
+
+
 def verify_image_label(args: tuple) -> list:
-    """Verify one image-label pair."""
     im_file, lb_file, prefix, keypoint, num_cls, nkpt, ndim, single_cls = args
-    # Number (missing, found, empty, corrupt), message, segments, keypoints
     nm, nf, ne, nc, msg, segments, keypoints = 0, 0, 0, 0, "", [], None
+    color = np.zeros((0, 1), dtype=np.int64)
+
     try:
-        # Verify images
+        # 1. 验证图像（保持不变）
         im = Image.open(im_file)
-        im.verify()  # PIL verify
-        shape = exif_size(im)  # image size
-        shape = (shape[1], shape[0])  # hw
-        assert (shape[0] > 9) & (shape[1] > 9), f"image size {shape} <10 pixels"
-        assert im.format.lower() in IMG_FORMATS, f"invalid image format {im.format}. {FORMATS_HELP_MSG}"
-        if im.format.lower() in {"jpg", "jpeg"}:
-            with open(im_file, "rb") as f:
-                f.seek(-2, 2)
-                if f.read() != b"\xff\xd9":  # corrupt JPEG
-                    ImageOps.exif_transpose(Image.open(im_file)).save(im_file, "JPEG", subsampling=0, quality=100)
-                    msg = f"{prefix}{im_file}: corrupt JPEG restored and saved"
+        im.verify()
+        shape = exif_size(im)
+        shape = (shape[1], shape[0])
+        assert (shape[0] > 9) & (shape[1] > 9)
+        assert im.format.lower() in IMG_FORMATS
 
-        # Verify labels
+        # 2. 处理标签
         if os.path.isfile(lb_file):
-            nf = 1  # label found
+            nf = 1
             with open(lb_file, encoding="utf-8") as f:
-                lb = [x.split() for x in f.read().strip().splitlines() if len(x)]
-                if any(len(x) > 6 for x in lb) and (not keypoint):  # is segment
-                    classes = np.array([x[0] for x in lb], dtype=np.float32)
-                    segments = [np.array(x[1:], dtype=np.float32).reshape(-1, 2) for x in lb]  # (cls, xy1...)
-                    lb = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)  # (cls, xywh)
-                lb = np.array(lb, dtype=np.float32)
-                # If pose labels come without bboxes (format: cls kpts...), derive xywh from keypoints
-                if keypoint and lb.size and lb.shape[1] == (1 + nkpt * ndim):
-                    kpts = lb[:, 1:].reshape(-1, nkpt, ndim)
-                    xy = kpts[..., :2]
-                    # only use visible keypoints to form the box when visibility is provided
-                    if ndim == 3:
-                        vis = kpts[..., 2] > 0
-                        xy = np.where(vis[..., None], xy, np.nan)
-                    x0 = np.nanmin(xy[..., 0], axis=1)
-                    y0 = np.nanmin(xy[..., 1], axis=1)
-                    x1 = np.nanmax(xy[..., 0], axis=1)
-                    y1 = np.nanmax(xy[..., 1], axis=1)
-                    # handle all-NaN (no visible kpts) by zeroing the box to fail later validation cleanly
-                    invalid = np.isnan(x0 + x1 + y0 + y1)
-                    cxy = np.stack(((x0 + x1) / 2, (y0 + y1) / 2), axis=1)
-                    wh = np.stack((x1 - x0, y1 - y0), axis=1)
-                    bbox = np.concatenate((cxy, wh), axis=1)
-                    bbox[invalid] = 0.0
-                    lb = np.concatenate((lb[:, :1], bbox, lb[:, 1:]), axis=1)
-            if nl := len(lb):
-                if keypoint:
-                    assert lb.shape[1] == (5 + nkpt * ndim), f"labels require {(5 + nkpt * ndim)} columns each"
-                    points = lb[:, 5:].reshape(-1, ndim)[:, :2]
-                else:
-                    assert lb.shape[1] == 5, f"labels require 5 columns, {lb.shape[1]} columns detected"
-                    points = lb[:, 1:]
-                # Coordinate points check with 1% tolerance
-                assert points.max() <= 1.01, f"non-normalized or out of bounds coordinates {points[points > 1.01]}"
-                assert lb.min() >= -0.01, f"negative class labels or coordinate {lb[lb < -0.01]}"
+                raw = [x.split() for x in f.read().strip().splitlines() if len(x)]
+            if len(raw) > 0:
+                raw = np.array(raw, dtype=np.float32)
+                color = raw[:, 0:1].astype(np.int64)  # 颜色类别
+                cls = raw[:, 1:2].astype(np.float32)  # 数字类别
 
-                # All labels
-                max_cls = 0 if single_cls else lb[:, 0].max()  # max label count
-                assert max_cls < num_cls, (
-                    f"Label class {int(max_cls)} exceeds dataset class count {num_cls}. "
-                    f"Possible class labels are 0-{num_cls - 1}"
-                )
-                _, i = np.unique(lb, axis=0, return_index=True)
-                if len(i) < nl:  # duplicate row check
-                    lb = lb[i]  # remove duplicates
-                    if segments:
-                        segments = [segments[x] for x in i]
-                    msg = f"{prefix}{im_file}: {nl - len(i)} duplicate labels removed"
+                # 提取多边形点（假设格式：[color_cls, num_cls, x1,y1, x2,y2, x3,y3, x4,y4]）
+                pts = raw[:, 2:].reshape(-1, 4, 2)  # 转换为 [N,4,2]
+
+                # 计算边界框(cxcywh)
+                x0 = pts[..., 0].min(1)
+                y0 = pts[..., 1].min(1)
+                x1 = pts[..., 0].max(1)
+                y1 = pts[..., 1].max(1)
+                cxy = np.stack(((x0 + x1)/2, (y0 + y1)/2), axis=1)  # 中心点
+                wh = np.stack((x1 - x0, y1 - y0), axis=1)            # 宽高
+
+                # 组合成YOLO格式：[cls, cx, cy, w, h]
+                lb = np.concatenate([cls, cxy, wh], axis=1)
+
+                # 关键点格式：[N, nkpt, ndim] = [N, 4, 2]
+                keypoints = pts  # shape: (N, 4, 2)
             else:
-                ne = 1  # label empty
-                lb = np.zeros((0, (5 + nkpt * ndim) if keypoint else 5), dtype=np.float32)
+                ne = 1
+                lb = np.zeros((0, 5), dtype=np.float32)
+                keypoints = np.zeros((0, nkpt, ndim), dtype=np.float32) if keypoint else None
+                color = np.zeros((0, 1), dtype=np.int64)
         else:
-            nm = 1  # label missing
-            lb = np.zeros((0, (5 + nkpt * ndim) if keypoint else 5), dtype=np.float32)
-        if keypoint:
-            keypoints = lb[:, 5:].reshape(-1, nkpt, ndim)
-            if ndim == 2:
-                kpt_mask = np.where((keypoints[..., 0] < 0) | (keypoints[..., 1] < 0), 0.0, 1.0).astype(np.float32)
-                keypoints = np.concatenate([keypoints, kpt_mask[..., None]], axis=-1)  # (nl, nkpt, 3)
-        lb = lb[:, :5]
-        return im_file, lb, shape, segments, keypoints, nm, nf, ne, nc, msg
+            nm = 1
+            lb = np.zeros((0, 5), dtype=np.float32)
+            keypoints = np.zeros((0, nkpt, ndim), dtype=np.float32) if keypoint else None
+            color = np.zeros((0, 1), dtype=np.int64)
+
+        # 3. 返回结果
+        return im_file, lb, shape, segments, keypoints, color, nm, nf, ne, nc, msg
+
     except Exception as e:
         nc = 1
         msg = f"{prefix}{im_file}: ignoring corrupt image/label: {e}"
-        return [None, None, None, None, None, nm, nf, ne, nc, msg]
+        return [None, None, None, None, None, np.zeros((0,1), dtype=np.int64), nm, nf, ne, nc, msg]
 
 
 def visualize_image_annotations(image_path: str, txt_path: str, label_map: dict[int, str]):

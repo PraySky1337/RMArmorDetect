@@ -115,7 +115,14 @@ def on_train_epoch_end(trainer) -> None:
 def on_fit_epoch_end(trainer) -> None:
     """Log epoch metrics at end of training epoch."""
     _log_scalars(trainer.metrics, trainer.epoch + 1)
+    
+    if WRITER:
+          WRITER.flush() 
 
+def on_train_end(trainer) -> None:
+      """Close TensorBoard writer at end of training."""
+      if WRITER:
+          WRITER.close()
 
 callbacks = (
     {

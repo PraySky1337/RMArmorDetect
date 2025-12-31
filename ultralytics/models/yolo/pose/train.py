@@ -9,6 +9,7 @@ from typing import Any
 from ultralytics.models import yolo
 from ultralytics.nn.tasks import PoseModel
 from ultralytics.utils import DEFAULT_CFG
+from ultralytics.utils.plotting import plot_images
 
 
 class PoseTrainer(yolo.detect.DetectionTrainer):
@@ -90,9 +91,42 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
 
     def get_validator(self):
         """Return an instance of the PoseValidator class for validation."""
-        self.loss_names = "box_loss", "pose_loss", "kobj_loss", "cls_loss", "dfl_loss"
+        self.loss_names = "pose_loss", "kobj_loss", "cls_loss", "color_loss"
         return yolo.pose.PoseValidator(
             self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
+        )
+
+    def plot_training_samples(self, batch: dict[str, Any], ni: int) -> None:
+        """Plot training samples with their annotations including color labels.
+
+        For keypoint-only mode, bboxes are excluded from visualization.
+
+        Args:
+            batch (dict[str, Any]): Dictionary containing batch data.
+            ni (int): Number of iterations.
+        """
+        # Get color_names from data config
+        color_names = self.data.get("color_names", None)
+
+        # DEBUG: Print color and cls values
+        if ni == 0:
+            print(f"[DEBUG plot] color_names: {color_names}")
+            print(f"[DEBUG plot] batch keys: {batch.keys()}")
+            if "color" in batch:
+                print(f"[DEBUG plot] color shape: {batch['color'].shape}, unique values: {batch['color'].unique().tolist()}")
+            if "cls" in batch:
+                print(f"[DEBUG plot] cls shape: {batch['cls'].shape}, unique values: {batch['cls'].unique().tolist()}")
+ 
+        # Create a copy without bboxes for keypoint-only visualization
+        plot_batch = {k: v for k, v in batch.items() if k != "bboxes"}
+
+        plot_images(
+            labels=plot_batch,
+            paths=batch["im_file"],
+            fname=self.save_dir / f"train_batch{ni}.jpg",
+            names=self.data["names"],
+            color_names=color_names,
+            on_plot=self.on_plot,
         )
 
     def get_dataset(self) -> dict[str, Any]:

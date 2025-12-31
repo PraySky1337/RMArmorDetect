@@ -443,7 +443,8 @@ class Annotator:
         for i, k in enumerate(kpts):
             color_k = kpt_color or (self.kpt_color[i].tolist() if is_pose else colors(i))
             x_coord, y_coord = k[0], k[1]
-            if x_coord % shape[1] != 0 and y_coord % shape[0] != 0:
+            # Fix: allow keypoints at (0,0) and near image boundaries
+            if x_coord >= 0 and y_coord >= 0 and x_coord <= shape[1] and y_coord <= shape[0]:
                 if len(k) == 3:
                     conf = k[2]
                     if conf < conf_thres:
@@ -683,6 +684,7 @@ def plot_images(
     paths: list[str] | None = None,
     fname: str = "images.jpg",
     names: dict[int, str] | None = None,
+    color_names: list[str] | None = None,
     on_plot: Callable | None = None,
     max_size: int = 1920,
     max_subplots: int = 16,
@@ -693,11 +695,12 @@ def plot_images(
 
     Args:
         labels (dict[str, Any]): Dictionary containing detection data with keys like 'cls', 'bboxes', 'conf', 'masks',
-            'keypoints', 'batch_idx', 'img'.
+            'keypoints', 'batch_idx', 'img', 'color'.
         images (torch.Tensor | np.ndarray]): Batch of images to plot. Shape: (batch_size, channels, height, width).
         paths (Optional[list[str]]): List of file paths for each image in the batch.
         fname (str): Output filename for the plotted image grid.
         names (Optional[dict[int, str]]): Dictionary mapping class indices to class names.
+        color_names (Optional[list[str]]): List of color names (e.g., ['B', 'R', 'N', 'P']).
         on_plot (Optional[Callable]): Optional callback function to be called after saving the plot.
         max_size (int): Maximum size of the output image grid.
         max_subplots (int): Maximum number of subplots in the image grid.
@@ -717,7 +720,7 @@ def plot_images(
         - 3 channels: Used as-is (standard RGB)
         - 4+ channels: Cropped to first 3 channels
     """
-    for k in {"cls", "bboxes", "conf", "masks", "keypoints", "batch_idx", "images"}:
+    for k in {"cls", "bboxes", "conf", "masks", "keypoints", "batch_idx", "images", "color"}:
         if k not in labels:
             continue
         if k == "cls" and labels[k].ndim == 2:
@@ -726,11 +729,21 @@ def plot_images(
             labels[k] = labels[k].cpu().numpy()
 
     cls = labels.get("cls", np.zeros(0, dtype=np.int64))
-    batch_idx = labels.get("batch_idx", np.zeros(cls.shape, dtype=np.int64))
+    batch_idx = labels.get("batch_idx", np.zeros(cls.shape[0], dtype=np.int64))
     bboxes = labels.get("bboxes", np.zeros(0, dtype=np.float32))
     confs = labels.get("conf", None)
     masks = labels.get("masks", np.zeros(0, dtype=np.uint8))
     kpts = labels.get("keypoints", np.zeros(0, dtype=np.float32))
+    color_cls = labels.get("color", None)  # color class indices, may be None
+    # Ensure color_cls has same length as cls, otherwise set to None
+    if color_cls is not None:
+        if isinstance(color_cls, torch.Tensor):
+            color_cls = color_cls.cpu().numpy()
+        if color_cls.ndim == 2:
+            color_cls = color_cls.squeeze(1)  # (n, 1) -> (n,)
+        # Check if lengths match
+        if len(color_cls) != len(cls):
+            color_cls = None  # Disable color annotation if lengths don't match
     images = labels.get("img", images)  # default to input images
 
     if len(images) and isinstance(images, torch.Tensor):
@@ -775,6 +788,11 @@ def plot_images(
         if len(cls) > 0:
             idx = batch_idx == i
             classes = cls[idx].astype("int")
+            # Get color indices for this batch if available
+            if color_cls is not None:
+                color_indices = color_cls[idx].astype("int")
+            else:
+                color_indices = None
             labels = confs is None
             conf = confs[idx] if confs is not None else None  # check for confidence presence (label vs pred)
 
@@ -793,18 +811,36 @@ def plot_images(
                 boxes = ops.xywhr2xyxyxyxy(boxes) if is_obb else ops.xywh2xyxy(boxes)
                 for j, box in enumerate(boxes.astype(np.int64).tolist()):
                     c = classes[j]
-                    color = colors(c)
-                    c = names.get(c, c) if names else c
+                    draw_color = colors(c)
+                    # Get class name
+                    cls_name = names.get(c, c) if names else c
+                    # Get color name if available
+                    if color_names and color_indices is not None and j < len(color_indices):
+                        col_idx = int(color_indices[j])
+                        col_name = color_names[col_idx] if col_idx < len(color_names) else str(col_idx)
+                        full_label = f"{col_name}-{cls_name}"
+                    else:
+                        full_label = f"{cls_name}"
                     if labels or conf[j] > conf_thres:
-                        label = f"{c}" if labels else f"{c} {conf[j]:.1f}"
-                        annotator.box_label(box, label, color=color)
+                        label = full_label if labels else f"{full_label} {conf[j]:.1f}"
+                        annotator.box_label(box, label, color=draw_color)
 
-            elif len(classes):
-                for c in classes:
-                    color = colors(c)
-                    c = names.get(c, c) if names else c
-                    label = f"{c}" if labels else f"{c} {conf[0]:.1f}"
-                    annotator.text([x, y], label, txt_color=color, box_color=(64, 64, 64, 128))
+            elif len(classes) and not len(kpts):
+                # Only draw labels here if there are no keypoints (keypoints will draw their own labels)
+                for ci, c in enumerate(classes):
+                    # Use color index for coloring if available, otherwise use class index
+                    if color_names and color_indices is not None and ci < len(color_indices):
+                        color_idx = int(color_indices[ci])
+                        draw_color = colors(color_idx)  # Color by actual color index
+                        col_name = color_names[color_idx] if color_idx < len(color_names) else str(color_idx)
+                        cls_name = names.get(c, c) if names else c
+                        full_label = f"{col_name}-{cls_name}"
+                    else:
+                        draw_color = colors(c)  # Color by class index
+                        cls_name = names.get(c, c) if names else c
+                        full_label = f"{cls_name}"
+                    label = full_label if labels else f"{full_label} {conf[0]:.1f}"
+                    annotator.text([x, y], label, txt_color=draw_color, box_color=(64, 64, 64, 128))
 
             # Plot keypoints
             if len(kpts):
@@ -817,9 +853,39 @@ def plot_images(
                         kpts_ *= scale
                 kpts_[..., 0] += x
                 kpts_[..., 1] += y
+                # Get mosaic shape for proper boundary checking
+                mosaic_shape = mosaic.shape[:2]  # (height, width)
                 for j in range(len(kpts_)):
                     if labels or conf[j] > conf_thres:
-                        annotator.kpts(kpts_[j], conf_thres=conf_thres)
+                        annotator.kpts(kpts_[j], shape=mosaic_shape, conf_thres=conf_thres)
+
+                        # Add label with class and color information for keypoints
+                        kpts_j = kpts_[j]
+                        valid_kpts = kpts_j[(kpts_j[:, 0] > 0) & (kpts_j[:, 1] > 0)]
+                        if len(valid_kpts) > 0:
+                            # Get center of keypoints
+                            center = valid_kpts.mean(axis=0)
+                            label_parts = []
+
+                            # Add color name if available
+                            if color_names and color_indices is not None and j < len(color_indices):
+                                col_idx = int(color_indices[j])
+                                col_name = color_names[col_idx] if col_idx < len(color_names) else str(col_idx)
+                                label_parts.append(col_name)
+
+                            # Add class name if available
+                            cls_idx = int(classes[j])
+                            cls_name = names.get(cls_idx, cls_idx) if names else cls_idx
+                            label_parts.append(str(cls_name))
+
+                            if label_parts:
+                                label = "-".join(label_parts)
+                                annotator.text(
+                                    [int(center[0]), int(center[1])],
+                                    label,
+                                    txt_color=(255, 255, 255),
+                                    box_color=(0, 0, 0, 128) if hasattr(annotator, 'pil') and annotator.pil else (0, 0, 0)
+                                )
 
             # Plot masks
             if len(masks):

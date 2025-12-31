@@ -389,13 +389,14 @@ class Instances:
         self.segments[..., 0] = self.segments[..., 0].clip(0, w)
         self.segments[..., 1] = self.segments[..., 1].clip(0, h)
         if self.keypoints is not None:
-            # Set out of bounds visibility to zero
-            self.keypoints[..., 2][
-                (self.keypoints[..., 0] < 0)
-                | (self.keypoints[..., 0] > w)
-                | (self.keypoints[..., 1] < 0)
-                | (self.keypoints[..., 1] > h)
-            ] = 0.0
+            # Only set visibility to zero if keypoints have 3 dimensions (x, y, visibility)
+            if self.keypoints.shape[-1] == 3:
+                self.keypoints[..., 2][
+                    (self.keypoints[..., 0] < 0)
+                    | (self.keypoints[..., 0] > w)
+                    | (self.keypoints[..., 1] < 0)
+                    | (self.keypoints[..., 1] > h)
+                ] = 0.0
             self.keypoints[..., 0] = self.keypoints[..., 0].clip(0, w)
             self.keypoints[..., 1] = self.keypoints[..., 1].clip(0, h)
 

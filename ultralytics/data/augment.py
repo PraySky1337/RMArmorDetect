@@ -766,54 +766,140 @@ class Mosaic(BaseMixTransform):
         labels["instances"].add_padding(padw, padh)
         return labels
 
+    # def _cat_labels(self, mosaic_labels: list[dict[str, Any]]) -> dict[str, Any]:
+    #     """Concatenate and process labels for mosaic augmentation.
+
+    #     This method combines labels from multiple images used in mosaic augmentation, clips instances to the mosaic
+    #     border, and removes zero-area boxes.
+
+    #     Args:
+    #         mosaic_labels (list[dict[str, Any]]): A list of label dictionaries for each image in the mosaic.
+
+    #     Returns:
+    #         (dict[str, Any]): A dictionary containing concatenated and processed labels for the mosaic image, including:
+    #             - im_file (str): File path of the first image in the mosaic.
+    #             - ori_shape (tuple[int, int]): Original shape of the first image.
+    #             - resized_shape (tuple[int, int]): Shape of the mosaic image (imgsz * 2, imgsz * 2).
+    #             - cls (np.ndarray): Concatenated class labels.
+    #             - instances (Instances): Concatenated instance annotations.
+    #             - mosaic_border (tuple[int, int]): Mosaic border size.
+    #             - texts (list[str], optional): Text labels if present in the original labels.
+
+    #     Examples:
+    #         >>> mosaic = Mosaic(dataset, imgsz=640)
+    #         >>> mosaic_labels = [{"cls": np.array([0, 1]), "instances": Instances(...)} for _ in range(4)]
+    #         >>> result = mosaic._cat_labels(mosaic_labels)
+    #         >>> print(result.keys())
+    #         dict_keys(['im_file', 'ori_shape', 'resized_shape', 'cls', 'instances', 'mosaic_border'])
+    #     """
+    #     if not mosaic_labels:
+    #         return {}
+    #     cls = []
+    #     color=[]
+    #     instances = []
+    #     imgsz = self.imgsz * 2  # mosaic imgsz
+    #     for labels in mosaic_labels:
+    #         cls.append(labels["cls"])
+    #         instances.append(labels["instances"])
+    #         color.append(labels["color"])
+
+    #     cls = np.concatenate([c.cpu().numpy() if isinstance(c, torch.Tensor) else c for c in cls], 0)
+    #     color = torch.cat(color, 0)  # (N, 1) tensor
+
+    #     final_instances = Instances.concatenate(instances, axis=0)
+    #     final_instances.clip(imgsz, imgsz)
+    #     good = final_instances.remove_zero_area_boxes()
+
+    #     cls = cls[good]
+    #     color = color[good]
+
+    #     # 构建最终类别 id: color+cls → B1, R3 等
+    #     # 假设 color_id 从 0 开始，cls_id 从 0 开始，总类别 = color_num * cls_num
+    #     # 例如 color_id=1, cls_id=2, cls_num=6 → final_cls = 1*6 + 2 = 8
+    #     color_num = color.max().item() + 1  # 最大 color_id +1
+    #     final_cls = (color * len(np.unique(cls))) + torch.from_numpy(cls).reshape(-1, 1)  # shape (N,1)
+
+    #     final_labels = {
+    #         "im_file": mosaic_labels[0]["im_file"],
+    #         "ori_shape": mosaic_labels[0]["ori_shape"],
+    #         "resized_shape": (imgsz, imgsz),
+    #         "cls": final_cls.squeeze(1),  # 最终类别 id
+    #         "instances": final_instances,
+    #         "color": color,  # 保留原 color 分支
+    #         "mosaic_border": self.border,
+    #     }
+    #     # # Final labels
+    #     # final_labels = {
+    #     #     "im_file": mosaic_labels[0]["im_file"],
+    #     #     "ori_shape": mosaic_labels[0]["ori_shape"],
+    #     #     "resized_shape": (imgsz, imgsz),
+    #     #     "cls": np.concatenate(cls, 0),
+    #     #     "instances": Instances.concatenate(instances, axis=0),
+    #     #     "mosaic_border": self.border,
+    #     # }
+    #     # if len(colors):
+    #     #     final_labels["color"] = np.concatenate(colors, 0)
+
+    #     # final_labels["instances"].clip(imgsz, imgsz)
+    #     # good = final_labels["instances"].remove_zero_area_boxes()
+    #     # final_labels["cls"] = final_labels["cls"][good]
+    #     if "texts" in mosaic_labels[0]:
+    #         final_labels["texts"] = mosaic_labels[0]["texts"] 
+    #     return final_labels
+
     def _cat_labels(self, mosaic_labels: list[dict[str, Any]]) -> dict[str, Any]:
-        """Concatenate and process labels for mosaic augmentation.
-
-        This method combines labels from multiple images used in mosaic augmentation, clips instances to the mosaic
-        border, and removes zero-area boxes.
-
-        Args:
-            mosaic_labels (list[dict[str, Any]]): A list of label dictionaries for each image in the mosaic.
-
-        Returns:
-            (dict[str, Any]): A dictionary containing concatenated and processed labels for the mosaic image, including:
-                - im_file (str): File path of the first image in the mosaic.
-                - ori_shape (tuple[int, int]): Original shape of the first image.
-                - resized_shape (tuple[int, int]): Shape of the mosaic image (imgsz * 2, imgsz * 2).
-                - cls (np.ndarray): Concatenated class labels.
-                - instances (Instances): Concatenated instance annotations.
-                - mosaic_border (tuple[int, int]): Mosaic border size.
-                - texts (list[str], optional): Text labels if present in the original labels.
-
-        Examples:
-            >>> mosaic = Mosaic(dataset, imgsz=640)
-            >>> mosaic_labels = [{"cls": np.array([0, 1]), "instances": Instances(...)} for _ in range(4)]
-            >>> result = mosaic._cat_labels(mosaic_labels)
-            >>> print(result.keys())
-            dict_keys(['im_file', 'ori_shape', 'resized_shape', 'cls', 'instances', 'mosaic_border'])
-        """
+        """Concatenate and process labels for mosaic augmentation."""
         if not mosaic_labels:
             return {}
-        cls = []
+        
+        # 确保所有color都是Tensor
+        colors = []
+        cls_list = []
         instances = []
         imgsz = self.imgsz * 2  # mosaic imgsz
+        
         for labels in mosaic_labels:
-            cls.append(labels["cls"])
+            # 转换color为Tensor（如果还不是）
+            color = labels["color"]
+            if isinstance(color, np.ndarray):
+                color = torch.from_numpy(color)
+            colors.append(color)
+            
+            # 转换cls为numpy数组（如果还不是）
+            cls = labels["cls"]
+            if isinstance(cls, torch.Tensor):
+                cls = cls.cpu().numpy()
+            cls_list.append(cls)
+            
             instances.append(labels["instances"])
-        # Final labels
+
+        # 拼接所有数据
+        cls = np.concatenate(cls_list, 0)
+        color = torch.cat(colors, 0)  # (N, 1) tensor
+        final_instances = Instances.concatenate(instances, axis=0)
+
+        # 处理边界框
+        final_instances.clip(imgsz, imgsz)
+        good = final_instances.remove_zero_area_boxes()
+
+        # 应用过滤
+        cls = cls[good]
+        color = color[good]
+
+        # 构建最终标签字典 - 保持cls为原始数字类别，不与color组合
         final_labels = {
             "im_file": mosaic_labels[0]["im_file"],
             "ori_shape": mosaic_labels[0]["ori_shape"],
             "resized_shape": (imgsz, imgsz),
-            "cls": np.concatenate(cls, 0),
-            "instances": Instances.concatenate(instances, axis=0),
+            "cls": cls,  # 保持原始数字类别 (0-7)
+            "instances": final_instances,
+            "color": color,  # 保持颜色类别 (0-3)
             "mosaic_border": self.border,
         }
-        final_labels["instances"].clip(imgsz, imgsz)
-        good = final_labels["instances"].remove_zero_area_boxes()
-        final_labels["cls"] = final_labels["cls"][good]
+
         if "texts" in mosaic_labels[0]:
             final_labels["texts"] = mosaic_labels[0]["texts"]
+
         return final_labels
 
 
@@ -872,6 +958,11 @@ class MixUp(BaseMixTransform):
         labels["img"] = (labels["img"] * r + labels2["img"] * (1 - r)).astype(np.uint8)
         labels["instances"] = Instances.concatenate([labels["instances"], labels2["instances"]], axis=0)
         labels["cls"] = np.concatenate([labels["cls"], labels2["cls"]], 0)
+        labels["color"] = np.concatenate([labels["color"], labels2["color"]], 0)
+        # num_cls = int(cls_cat.max()) + 1  # 总数字类别数
+        # final_cls = (color_cat * num_cls + torch.from_numpy(cls_cat).reshape(-1, 1)).squeeze(1)
+        # labels["cls"] = final_cls
+        # labels["color"] = color_cat 
         return labels
 
 
@@ -985,6 +1076,9 @@ class CutMix(BaseMixTransform):
         instances2.add_padding(x1, y1)
 
         labels["cls"] = np.concatenate([labels["cls"], labels2["cls"][indexes2]], axis=0)
+        # Sync color with cls if present
+        if "color" in labels and "color" in labels2:
+            labels["color"] = np.concatenate([labels["color"], labels2["color"][indexes2]], axis=0)
         labels["instances"] = Instances.concatenate([labels["instances"], instances2], axis=0)
         return labels
 
@@ -1194,12 +1288,12 @@ class RandomPerspective:
         boundaries after transformation.
 
         Args:
-            keypoints (np.ndarray): Array of keypoints with shape (N, 17, 3), where N is the number of instances, 17 is
-                the number of keypoints per instance, and 3 represents (x, y, visibility).
+            keypoints (np.ndarray): Array of keypoints with shape (N, K, 2) or (N, K, 3), where N is the number
+                of instances, K is the number of keypoints per instance, and 2/3 represents (x, y) or (x, y, visibility).
             M (np.ndarray): 3x3 affine transformation matrix.
 
         Returns:
-            (np.ndarray): Transformed keypoints array with the same shape as input (N, 17, 3).
+            (np.ndarray): Transformed keypoints array with the same shape as input.
 
         Examples:
             >>> random_perspective = RandomPerspective()
@@ -1208,16 +1302,23 @@ class RandomPerspective:
             >>> transformed_keypoints = random_perspective.apply_keypoints(keypoints, M)
         """
         n, nkpt = keypoints.shape[:2]
+        ndim = keypoints.shape[2] if len(keypoints.shape) > 2 else 2
         if n == 0:
             return keypoints
         xy = np.ones((n * nkpt, 3), dtype=keypoints.dtype)
-        visible = keypoints[..., 2].reshape(n * nkpt, 1)
         xy[:, :2] = keypoints[..., :2].reshape(n * nkpt, 2)
         xy = xy @ M.T  # transform
         xy = xy[:, :2] / xy[:, 2:3]  # perspective rescale or affine
         out_mask = (xy[:, 0] < 0) | (xy[:, 1] < 0) | (xy[:, 0] > self.size[0]) | (xy[:, 1] > self.size[1])
-        visible[out_mask] = 0
-        return np.concatenate([xy, visible], axis=-1).reshape(n, nkpt, 3)
+
+        if ndim == 3:
+            # Has visibility dimension
+            visible = keypoints[..., 2].reshape(n * nkpt, 1)
+            visible[out_mask] = 0
+            return np.concatenate([xy, visible], axis=-1).reshape(n, nkpt, 3)
+        else:
+            # 2D keypoints only (x, y)
+            return xy.reshape(n, nkpt, 2)
 
     def __call__(self, labels: dict[str, Any]) -> dict[str, Any]:
         """Apply random perspective and affine transformations to an image and its associated labels.
@@ -1294,6 +1395,9 @@ class RandomPerspective:
         )
         labels["instances"] = new_instances[i]
         labels["cls"] = cls[i]
+        # Sync filter color if present
+        if "color" in labels:
+            labels["color"] = labels["color"][i]
         labels["img"] = img
         labels["resized_shape"] = img.shape[:2]
         return labels
@@ -1946,8 +2050,23 @@ class Albumentations:
                 new = self.transform(image=im, bboxes=bboxes, class_labels=cls)  # transformed
                 if len(new["class_labels"]) > 0:  # skip update if no bbox in new im
                     labels["img"] = new["image"]
-                    labels["cls"] = np.array(new["class_labels"])
-                    bboxes = np.array(new["bboxes"], dtype=np.float32)
+                    new_cls = np.array(new["class_labels"])
+                    new_bboxes = np.array(new["bboxes"], dtype=np.float32)
+
+                    # Sync color if present and bboxes were filtered
+                    if "color" in labels and len(new_cls) != len(cls):
+                        # Find which original boxes were kept by matching bboxes
+                        kept_indices = []
+                        for i, new_box in enumerate(new_bboxes):
+                            for j, old_box in enumerate(bboxes):
+                                if np.allclose(new_box, old_box, atol=1e-4):
+                                    kept_indices.append(j)
+                                    break
+                        if len(kept_indices) == len(new_cls):
+                            labels["color"] = labels["color"][kept_indices]
+
+                    labels["cls"] = new_cls
+                    bboxes = new_bboxes
                 labels["instances"].update(bboxes=bboxes)
         else:
             labels["img"] = self.transform(image=labels["img"])["image"]  # transformed
@@ -2022,37 +2141,27 @@ class Format:
         self.batch_idx = batch_idx  # keep the batch indexes
         self.bgr = bgr
 
+
     def __call__(self, labels: dict[str, Any]) -> dict[str, Any]:
-        """Format image annotations for object detection, instance segmentation, and pose estimation tasks.
-
-        This method standardizes the image and instance annotations to be used by the `collate_fn` in PyTorch
-        DataLoader. It processes the input labels dictionary, converting annotations to the specified format and
-        applying normalization if required.
-
-        Args:
-            labels (dict[str, Any]): A dictionary containing image and annotation data with the following keys:
-                - 'img': The input image as a numpy array.
-                - 'cls': Class labels for instances.
-                - 'instances': An Instances object containing bounding boxes, segments, and keypoints.
-
-        Returns:
-            (dict[str, Any]): A dictionary with formatted data, including:
-                - 'img': Formatted image tensor.
-                - 'cls': Class label's tensor.
-                - 'bboxes': Bounding boxes tensor in the specified format.
-                - 'masks': Instance masks tensor (if return_mask is True).
-                - 'keypoints': Keypoints tensor (if return_keypoint is True).
-                - 'batch_idx': Batch index tensor (if batch_idx is True).
-
-        Examples:
-            >>> formatter = Format(bbox_format="xywh", normalize=True, return_mask=True)
-            >>> labels = {"img": np.random.rand(640, 640, 3), "cls": np.array([0, 1]), "instances": Instances(...)}
-            >>> formatted_labels = formatter(labels)
-            >>> print(formatted_labels.keys())
-        """
         img = labels.pop("img")
         h, w = img.shape[:2]
+
+        # 处理cls数据
         cls = labels.pop("cls")
+        if isinstance(cls, torch.Tensor):
+            cls = cls.cpu().numpy() if cls.is_cuda else cls.numpy()
+
+        # Pop color for later processing
+        color = labels.pop("color", None)
+        if color is not None:
+            if isinstance(color, torch.Tensor):
+                color = color.cpu().numpy() if color.is_cuda else color.numpy()
+            elif isinstance(color, np.ndarray):
+                color = color.copy()
+            # Flatten to 1D if needed
+            if hasattr(color, 'ndim') and color.ndim == 2:
+                color = color.flatten()
+
         instances = labels.pop("instances")
         instances.convert_bbox(format=self.bbox_format)
         instances.denormalize(w, h)
@@ -2067,27 +2176,42 @@ class Format:
                     1 if self.mask_overlap else nl, img.shape[0] // self.mask_ratio, img.shape[1] // self.mask_ratio
                 )
             labels["masks"] = masks
+
         labels["img"] = self._format_img(img)
-        labels["cls"] = torch.from_numpy(cls) if nl else torch.zeros(nl, 1)
+        labels["cls"] = torch.from_numpy(cls) if nl and isinstance(cls, np.ndarray) else torch.zeros(nl, 1)
         labels["bboxes"] = torch.from_numpy(instances.bboxes) if nl else torch.zeros((nl, 4))
+
         if self.return_keypoint:
-            labels["keypoints"] = (
-                torch.empty(0, 3) if instances.keypoints is None else torch.from_numpy(instances.keypoints)
-            )
-            if self.normalize:
+            if instances.keypoints is None or len(instances.keypoints) == 0:
+                # Empty keypoints - use shape (0, nkpt, ndim), default to (0, 4, 2) for armor
+                labels["keypoints"] = torch.zeros((0, 4, 2))
+            else:
+                labels["keypoints"] = torch.from_numpy(instances.keypoints)
+            if self.normalize and labels["keypoints"].numel() > 0:
                 labels["keypoints"][..., 0] /= w
                 labels["keypoints"][..., 1] /= h
+
         if self.return_obb:
             labels["bboxes"] = (
                 xyxyxyxy2xywhr(torch.from_numpy(instances.segments)) if len(instances.segments) else torch.zeros((0, 5))
             )
-        # NOTE: need to normalize obb in xywhr format for width-height consistency
+
         if self.normalize:
             labels["bboxes"][:, [0, 2]] /= w
             labels["bboxes"][:, [1, 3]] /= h
-        # Then we can use collate_fn
+
         if self.batch_idx:
             labels["batch_idx"] = torch.zeros(nl)
+
+        # Handle color - ensure length matches nl and shape is (nl, 1)
+        if color is not None and len(color) >= nl:
+            color = color[:nl]  # Truncate to match nl
+            color = torch.from_numpy(np.asarray(color, dtype=np.int64))
+            if color.dim() == 1:
+                color = color.unsqueeze(-1)
+            labels["color"] = color
+        else:
+            labels["color"] = torch.zeros(nl, 1, dtype=torch.int64)
         return labels
 
     def _format_img(self, img: np.ndarray) -> torch.Tensor:

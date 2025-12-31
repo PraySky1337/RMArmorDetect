@@ -1,9 +1,9 @@
 # ================= 基础训练设置 =================
 model: "ultralytics/cfg/models/11/yolo11-pose.yaml"  # 模型结构或权重
-epochs: 500               # 训练轮数
-imgsz: 640               # 输入尺寸
-batch: 256                # batch size
-device: "0, 1"                # GPU id，CPU 可写 "cpu"
+epochs: 350       # 训练轮数
+imgsz: 640            # 输入尺寸
+batch: 256              # batch size
+device: "0,1"                # GPU id，CPU 可写 "cpu"
 workers: 8               # dataloader workers 数
 cache: false             # 是否缓存数据到内存/磁盘
 
@@ -23,21 +23,20 @@ warmup_momentum: 0.8     # warmup 起始动量
 warmup_bias_lr: 0.1      # bias 的 warmup 学习率
 cos_lr: true             # 是否使用余弦退火
 
-# ================= 损失函数权重（pose 任务关键） =================
-box: 7.5                 # bbox 回归 loss 权重
-cls: 0.5                 # 分类 loss 权重
-dfl: 1.5                 # distribution focal loss 权重
+# ================= 损失函数权重（仅关键点模式，无bbox） =================
 pose: 12.0               # 关键点回归 loss 权重
 kobj: 2.0                # 关键点 objectness loss 权重
+cls: 2.0                # 分类 loss 权重
+color: 2.0               # 颜色分类 loss 权重
 
 # ================= 数据增强超参数 =================
-hsv_h: 0.015             # 色调扰动
-hsv_s: 0.7               # 饱和度扰动
-hsv_v: 0.6               # 亮度扰动
+hsv_h: 0.03              # 色调扰动
+hsv_s: 0.8               # 饱和度扰动
+hsv_v: 0.7               # 亮度扰动
 
-degrees: 10.             # 旋转角度
-translate: 0.3           # 平移比例
-scale: 0.5               # 尺度缩放范围
+degrees: 5.0             # 旋转角度
+translate: 0.15           # 平移比例
+scale: 0.6               # 尺度缩放范围
 shear: 0.0               # 剪切
 perspective: 0.0         # 透视变换
 
@@ -61,7 +60,7 @@ val: true                # 训练过程中是否做验证
 
 # ================= 日志 & 权重保存 =================
 tensorboard: true        # 脚本里用 SETTINGS 控制
-project: "/home/rry/RMArmorPose/runs/pose"   # 日志根目录
+project: "/home/ljy/RMArmorPose/runs"   # 日志根目录
 name: "rmarmor_yolo11_pose"                  # 本次训练子目录
 exist_ok: true          # 已存在同名目录是否复用
 save: true              # 保存 best.pt / last.pt

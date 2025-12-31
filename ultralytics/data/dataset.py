@@ -121,7 +121,7 @@ class YOLODataset(BaseDataset):
                 ),
             )
             pbar = TQDM(results, desc=desc, total=total)
-            for im_file, lb, shape, segments, keypoint, nm_f, nf_f, ne_f, nc_f, msg in pbar:
+            for im_file, lb, shape, segments, keypoint, color, nm_f, nf_f, ne_f, nc_f, msg in pbar:
                 nm += nm_f
                 nf += nf_f
                 ne += ne_f
@@ -131,10 +131,11 @@ class YOLODataset(BaseDataset):
                         {
                             "im_file": im_file,
                             "shape": shape,
-                            "cls": lb[:, 0:1],  # n, 1
-                            "bboxes": lb[:, 1:],  # n, 4
+                            "cls": lb[:, 0:1],  # n, 1 - 数字类别
+                            "bboxes": lb[:, 1:5],  # n, 4 - cx, cy, w, h
                             "segments": segments,
-                            "keypoints": keypoint,
+                            "keypoints": keypoint,  # n, 4, 2 - 4个角点
+                            "color": color,  # n, 1 - 颜色类别
                             "normalized": True,
                             "bbox_format": "xywh",
                         }
@@ -186,11 +187,22 @@ class YOLODataset(BaseDataset):
             raise RuntimeError(
                 f"No valid images found in {cache_path}. Images with incorrectly formatted labels are ignored. {HELP_URL}"
             )
-        self.im_files = [lb["im_file"] for lb in labels]  # update im_files
+        self.im_files = [lb["im_file"] for lb in labels]
+        for lb in labels:
+            color_arr = lb.get("color", None)
+            if color_arr is None:
+                lb["color"] = np.zeros((len(lb["cls"]),), dtype=np.int64)  # 没有 color -> zero fill
+            else:
+                # 确保 color 是一维数组
+                color_arr = np.asarray(color_arr, dtype=np.int64)
+                if color_arr.ndim == 2:
+                    color_arr = color_arr.squeeze(-1)  # (n, 1) -> (n,)
+                lb["color"] = color_arr.flatten()  # 确保是一维
+      
 
         # Check if the dataset is all boxes or all segments
-        lengths = ((len(lb["cls"]), len(lb["bboxes"]), len(lb["segments"])) for lb in labels)
-        len_cls, len_boxes, len_segments = (sum(x) for x in zip(*lengths))
+        lengths = ((len(lb["cls"]), len(lb["color"]),len(lb["bboxes"]), len(lb["segments"])) for lb in labels)
+        len_cls,len_color ,len_boxes, len_segments = (sum(x) for x in zip(*lengths))
         if len_segments and len_boxes != len_segments:
             LOGGER.warning(
                 f"Box and segment counts should be equal, but got len(segments) = {len_segments}, "
@@ -200,6 +212,8 @@ class YOLODataset(BaseDataset):
             for lb in labels:
                 lb["segments"] = []
         if len_cls == 0:
+            LOGGER.warning(f"Labels are missing or empty in {cache_path}, training may not work correctly. {HELP_URL}")
+        if len_color == 0:
             LOGGER.warning(f"Labels are missing or empty in {cache_path}, training may not work correctly. {HELP_URL}")
         return labels
 
@@ -265,6 +279,20 @@ class YOLODataset(BaseDataset):
         bbox_format = label.pop("bbox_format")
         normalized = label.pop("normalized")
 
+        # Handle color - it's already loaded in get_labels as "color"
+        if "color" in label:
+            color = label["color"]
+            if isinstance(color, np.ndarray):
+                if color.ndim == 1:
+                    color = color.reshape(-1, 1)
+                label["color"] = color[:len(bboxes)]  # 确保长度匹配
+            elif isinstance(color, torch.Tensor):
+                if color.dim() == 1:
+                    color = color.unsqueeze(-1)
+                label["color"] = color[:len(bboxes)]
+        else:
+            label["color"] = np.zeros((len(bboxes), 1), dtype=np.int64)
+
         # NOTE: do NOT resample oriented boxes
         segment_resamples = 100 if self.use_obb else 1000
         if len(segments) > 0:
@@ -298,8 +326,62 @@ class YOLODataset(BaseDataset):
                 value = torch.stack(value, 0)
             elif k == "visuals":
                 value = torch.nn.utils.rnn.pad_sequence(value, batch_first=True)
-            if k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb"}:
-                value = torch.cat(value, 0)
+            elif k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb", "color"}:
+                # Debug: print shapes before cat
+                shapes = [v.shape for v in value]
+                # print(f"DEBUG collate {k}: shapes = {shapes}")
+
+                # Ensure all tensors have consistent dimensions
+                fixed_value = []
+                # Find reference shape from non-empty tensor
+                ref_shape = None
+                for v in value:
+                    if v.numel() > 0:
+                        ref_shape = v.shape
+                        break
+
+                for v in value:
+                    if v.numel() == 0 or (v.dim() == 1 and ref_shape is not None and len(ref_shape) > 1):
+                        # Create empty tensor with correct shape
+                        if k == "keypoints" and ref_shape is not None:
+                            v = torch.zeros((0, *ref_shape[1:]), dtype=v.dtype)
+                        elif k == "bboxes":
+                            v = torch.zeros((0, 4), dtype=v.dtype)
+                        elif k in {"cls", "color"}:
+                            v = torch.zeros((0, 1), dtype=v.dtype)
+                        elif k == "segments" and ref_shape is not None:
+                            v = torch.zeros((0, *ref_shape[1:]), dtype=v.dtype)
+                        elif k == "masks" and ref_shape is not None:
+                            v = torch.zeros((0, *ref_shape[1:]), dtype=v.dtype)
+                        elif k == "obb":
+                            v = torch.zeros((0, 5), dtype=v.dtype)
+                        elif ref_shape is not None and len(ref_shape) > 1:
+                            v = torch.zeros((0, *ref_shape[1:]), dtype=v.dtype)
+                    # Ensure 2D for cls and color
+                    if k in {"cls", "color"} and v.dim() == 1:
+                        v = v.unsqueeze(-1)
+                    fixed_value.append(v)
+
+                if fixed_value:
+                    try:
+                        value = torch.cat(fixed_value, 0)
+                    except RuntimeError as e:
+                        print(f"ERROR in collate_fn for key '{k}':")
+                        for j, fv in enumerate(fixed_value):
+                            print(f"  tensor {j}: shape={fv.shape}, dtype={fv.dtype}")
+                        raise e
+                else:
+                    # All empty - create appropriate empty tensor
+                    if k == "keypoints":
+                        value = torch.zeros((0, 4, 2))
+                    elif k == "bboxes":
+                        value = torch.zeros((0, 4))
+                    elif k in {"cls", "color"}:
+                        value = torch.zeros((0, 1))
+                    elif k == "obb":
+                        value = torch.zeros((0, 5))
+                    else:
+                        value = torch.zeros((0,))
             new_batch[k] = value
         new_batch["batch_idx"] = list(new_batch["batch_idx"])
         for i in range(len(new_batch["batch_idx"])):
@@ -783,6 +865,13 @@ class ClassificationDataset:
         im = Image.fromarray(cv2.cvtColor(im, cv2.COLOR_BGR2RGB))
         sample = self.torch_transforms(im)
         return {"img": sample, "cls": j}
+    #     return {
+    #     "img": sample,
+    #     "cls": torch.tensor(label["cls"], dtype=torch.long),
+    #     "color": torch.tensor(label["color"], dtype=torch.long),
+    #     "keypoints": torch.tensor(label["keypoints"], dtype=torch.float32)
+    # }
+
 
     def __len__(self) -> int:
         """Return the total number of samples in the dataset."""

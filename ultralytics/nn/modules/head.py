@@ -93,7 +93,7 @@ class Detect(nn.Module):
         self.cv2 = nn.ModuleList(
             nn.Sequential(Conv(x, c2, 3), Conv(c2, c2, 3), nn.Conv2d(c2, 4 * self.reg_max, 1)) for x in ch
         )
-        self.cv3 = (
+        self.cv3 = ( 
             nn.ModuleList(nn.Sequential(Conv(x, c3, 3), Conv(c3, c3, 3), nn.Conv2d(c3, self.nc, 1)) for x in ch)
             if self.legacy
             else nn.ModuleList(
@@ -210,8 +210,7 @@ class Detect(nn.Module):
         scores, index = scores.flatten(1).topk(min(max_det, anchors))
         i = torch.arange(batch_size)[..., None]  # batch indices
         return torch.cat([boxes[i, index // nc], scores[..., None], (index % nc)[..., None].float()], dim=-1)
-
-
+    
 class Segment(Detect):
     """YOLO Segment head for segmentation models.
 
@@ -260,7 +259,6 @@ class Segment(Detect):
         if self.training:
             return x, mc, p
         return (torch.cat([x, mc], 1), p) if self.export else (torch.cat([x[0], mc], 1), (x[1], mc, p))
-
 
 class OBB(Detect):
     """YOLO OBB detection head for detection with rotation models.
@@ -315,58 +313,156 @@ class OBB(Detect):
         """Decode rotated bounding boxes."""
         return dist2rbox(bboxes, self.angle, anchors, dim=1)
 
+class Pose(nn.Module):
+    """YOLO Pose head for armor detection WITHOUT bounding box.
 
-class Pose(Detect):
-    """YOLO Pose head for keypoints models.
+    This class predicts keypoints and two classification branches for armor detection:
+    - Number class (1-8): predicted by cv3 branch
+    - Color class (R,B,N,P): predicted by cv_color branch
+    - Keypoints: 4 corner points with 2D coordinates (defines object location)
 
-    This class extends the Detect head to include keypoint prediction capabilities for pose estimation tasks.
+    NO bounding box prediction - keypoints alone define the armor location.
+
+    The label format is: color cls x1 y1 x2 y2 x3 y3 x4 y4
+    During inference, the two class branches are merged into joint predictions (e.g., R1, B2, etc.).
 
     Attributes:
-        kpt_shape (tuple): Number of keypoints and dimensions (2 for x,y or 3 for x,y,visible).
+        nc_num (int): Number of number classes (1-8).
+        nc_color (int): Number of color classes (R, B, N, P).
+        kpt_shape (tuple): Number of keypoints and dimensions (4, 2 for 4 corners).
         nk (int): Total number of keypoint values.
+        nl (int): Number of detection layers.
+        cv3 (nn.ModuleList): Convolution layers for number classification.
+        cv_color (nn.ModuleList): Convolution layers for color classification.
         cv4 (nn.ModuleList): Convolution layers for keypoint prediction.
-
-    Methods:
-        forward: Perform forward pass through YOLO model and return predictions.
-        kpts_decode: Decode keypoints from predictions.
-
-    Examples:
-        Create a pose detection head
-        >>> pose = Pose(nc=80, kpt_shape=(17, 3), ch=(256, 512, 1024))
-        >>> x = [torch.randn(1, 256, 80, 80), torch.randn(1, 512, 40, 40), torch.randn(1, 1024, 20, 20)]
-        >>> outputs = pose(x)
     """
 
-    def __init__(self, nc: int = 80, kpt_shape: tuple = (17, 3), ch: tuple = ()):
-        """Initialize YOLO network with default parameters and Convolutional Layers.
+    dynamic = False  # force grid reconstruction
+    export = False  # export mode
+    format = None  # export format
+    shape = None
+    anchors = torch.empty(0)
+    strides = torch.empty(0)
+
+    def __init__(self, nc_num: int = 8, nc_color: int = 4, kpt_shape: tuple = (4, 2), ch: tuple = ()):
+        """Initialize Pose head with dual classification branches and keypoint prediction.
 
         Args:
-            nc (int): Number of classes.
-            kpt_shape (tuple): Number of keypoints, number of dims (2 for x,y or 3 for x,y,visible).
+            nc_num (int): Number of number classes (1-8 for armor numbers).
+            nc_color (int): Number of color classes (R, B, N, P).
+            kpt_shape (tuple): Number of keypoints and dimensions (4, 2 for x,y coordinates).
             ch (tuple): Tuple of channel sizes from backbone feature maps.
         """
-        super().__init__(nc, ch)
-        self.kpt_shape = kpt_shape  # number of keypoints, number of dims (2 for x,y or 3 for x,y,visible)
-        self.nk = kpt_shape[0] * kpt_shape[1]  # number of keypoints total
+        super().__init__()
 
+        if not ch or len(ch) == 0:
+            ch = (256, 512, 1024)
+
+        self.nc_num = nc_num
+        self.nc_color = nc_color
+        self.nc = nc_num  # for compatibility
+        self.kpt_shape = kpt_shape
+        self.nk = kpt_shape[0] * kpt_shape[1]  # 8 for 4 points x 2D
+        self.nl = len(ch)  # number of detection layers
+        self.no = nc_num + nc_color + self.nk  # outputs per anchor (no bbox)
+        # self.stride = torch.zeros(self.nl)  # strides computed during build
+        self.stride = torch.tensor([8., 16., 32.])
+
+
+        # 数字分类分支
+        c3_num = max(ch[0], min(self.nc_num, 100))
+        self.cv3 = nn.ModuleList(
+            nn.Sequential(
+                nn.Sequential(DWConv(x, x, 3), Conv(x, c3_num, 1)),
+                nn.Sequential(DWConv(c3_num, c3_num, 3), Conv(c3_num, c3_num, 1)),
+                nn.Conv2d(c3_num, self.nc_num, 1),
+            )
+            for x in ch
+        )
+
+        # 颜色分类分支
+        c3_color = max(ch[0], min(self.nc_color, 100))
+        self.cv_color = nn.ModuleList(
+            nn.Sequential(
+                nn.Sequential(DWConv(x, x, 3), Conv(x, c3_color, 1)),
+                nn.Sequential(DWConv(c3_color, c3_color, 3), Conv(c3_color, c3_color, 1)),
+                nn.Conv2d(c3_color, self.nc_color, 1),
+            )
+            for x in ch
+        )
+
+        # 关键点预测分支
         c4 = max(ch[0] // 4, self.nk)
-        self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.nk, 1)) for x in ch)
+        self.cv4 = nn.ModuleList(
+            nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.nk, 1))
+            for x in ch
+        )
 
+    #输入tensor列表，输出tensor或元组
     def forward(self, x: list[torch.Tensor]) -> torch.Tensor | tuple:
-        """Perform forward pass through YOLO model and return predictions."""
-        bs = x[0].shape[0]  # batch size
-        kpt = torch.cat([self.cv4[i](x[i]).view(bs, self.nk, -1) for i in range(self.nl)], -1)  # (bs, 17*3, h*w)
-        x = Detect.forward(self, x)
+        """Perform forward pass with dual classification branches and keypoint prediction.
+
+        Returns during training: (feats, (cls_num, cls_color, kpt))
+        Returns during inference: (combined_output, (feats, (cls_num, cls_color, kpt))) or combined_output
+        """
+        bs = x[0].shape[0] #当前一批有多少张图片，x是第一个特征图的特征向量，形状为(B, C, H, W)，所以bs = B
+
+        # 提取各分支预测
+        kpt = torch.cat([self.cv4[i](x[i]).view(bs, self.nk, -1) for i in range(self.nl)], -1)
+        cls_num = torch.cat([self.cv3[i](x[i]).view(bs, self.nc_num, -1) for i in range(self.nl)], -1)
+        cls_color = torch.cat([self.cv_color[i](x[i]).view(bs, self.nc_color, -1) for i in range(self.nl)], -1)
+
+        # 保存原始特征用于loss计算
+        feats = [xi.clone() for xi in x]
+
+        # 训练模式
         if self.training:
-            return x, kpt
+            return feats, (cls_num, cls_color, kpt)
+
+        # 推理模式 - 初始化anchors和strides
+        shape = x[0].shape  # BCHW
+        if self.dynamic or self.shape != shape:
+            anchors, strides = make_anchors(x, self.stride, 0.5)
+            # anchors: (na, 2), strides: (na, 1)
+            self.anchors = anchors.transpose(0, 1)  # (2, na)
+            self.strides = strides.squeeze(-1)  # (na,) instead of (1, na)
+            self.shape = shape
+
+        # 解码关键点
         pred_kpt = self.kpts_decode(bs, kpt)
-        return torch.cat([x, pred_kpt], 1) if self.export else (torch.cat([x[0], pred_kpt], 1), (x[1], kpt))
+
+        # 获取分类预测
+        cls_num_sig = cls_num.sigmoid()  # (bs, nc_num, na)
+        cls_color_sig = cls_color.sigmoid()  # (bs, nc_color, na)
+
+        if self.export:
+            # 导出模式: 合并为联合类别 + 关键点
+            joint_cls = self._merge_branches(cls_num, cls_color)  # (bs, na, nc_num*nc_color)
+            joint_cls = joint_cls.permute(0, 2, 1)  # (bs, nc_num*nc_color, na)
+            # 输出: (bs, nc_num*nc_color + nk, na)
+            return torch.cat([joint_cls, pred_kpt], 1)
+
+        # 验证模式: 分别输出
+        # combined: (bs, nc_num + nc_color + nk, na)
+        combined = torch.cat([cls_num_sig, cls_color_sig, pred_kpt], 1)
+
+        return (combined, (feats, (cls_num, cls_color, kpt)))
+
+    def _merge_branches(self, cls_num: torch.Tensor, cls_color: torch.Tensor) -> torch.Tensor:
+        """Merge number and color classification outputs into joint predictions."""
+        prob_num = cls_num.sigmoid().permute(0, 2, 1)  # (bs, na, nc_num)
+        prob_color = cls_color.sigmoid().permute(0, 2, 1)  # (bs, na, nc_color)
+
+        bs, na, _ = prob_num.shape
+        prob_color_flat = prob_color.reshape(bs * na, self.nc_color, 1)
+        prob_num_flat = prob_num.reshape(bs * na, 1, self.nc_num)
+        joint_prob = torch.bmm(prob_color_flat, prob_num_flat)
+        return joint_prob.view(bs, na, self.nc_color * self.nc_num)
 
     def kpts_decode(self, bs: int, kpts: torch.Tensor) -> torch.Tensor:
         """Decode keypoints from predictions."""
         ndim = self.kpt_shape[1]
         if self.export:
-            # NCNN fix
             y = kpts.view(bs, *self.kpt_shape, -1)
             a = (y[:, :, :2] * 2.0 + (self.anchors - 0.5)) * self.strides
             if ndim == 3:
@@ -377,11 +473,46 @@ class Pose(Detect):
             if ndim == 3:
                 if NOT_MACOS14:
                     y[:, 2::ndim].sigmoid_()
-                else:  # Apple macOS14 MPS bug https://github.com/ultralytics/ultralytics/pull/21878
+                else:
                     y[:, 2::ndim] = y[:, 2::ndim].sigmoid()
-            y[:, 0::ndim] = (y[:, 0::ndim] * 2.0 + (self.anchors[0] - 0.5)) * self.strides
-            y[:, 1::ndim] = (y[:, 1::ndim] * 2.0 + (self.anchors[1] - 0.5)) * self.strides
+
+            # Ensure proper broadcasting: y shape is (bs, nk, na),
+            # anchors[0] is (na,), strides is (na,)
+            anchor_x = self.anchors[0].unsqueeze(0).unsqueeze(0)  # (1, 1, na)
+            anchor_y = self.anchors[1].unsqueeze(0).unsqueeze(0)  # (1, 1, na)
+            stride_expanded = self.strides.unsqueeze(0).unsqueeze(0)  # (1, 1, na)
+
+            y[:, 0::ndim] = (y[:, 0::ndim] * 2.0 + (anchor_x - 0.5)) * stride_expanded
+            y[:, 1::ndim] = (y[:, 1::ndim] * 2.0 + (anchor_y - 0.5)) * stride_expanded
+
+            # Clamp keypoints to image bounds to avoid negative values or out-of-range predictions
+            if self.shape is not None:
+                imgsz_h = self.shape[2] * self.stride[0]
+                imgsz_w = self.shape[3] * self.stride[0]
+                # y[:, 0::ndim] = y[:, 0::ndim].clamp(0, imgsz_w)
+                # y[:, 1::ndim] = y[:, 1::ndim].clamp(0, imgsz_h)
+            else:
+                max_anchor_y = self.anchors[1].max().item()
+                max_anchor_x = self.anchors[0].max().item()
+                max_stride = self.strides.max().item()
+                imgsz_h = (max_anchor_y + 1) * max_stride
+                imgsz_w = (max_anchor_x + 1) * max_stride
+
+            y[:, 0::ndim] = y[:, 0::ndim].clamp(0, imgsz_w)
+            y[:, 1::ndim] = y[:, 1::ndim].clamp(0, imgsz_h)
+
+
             return y
+    #根据每层特征图的大小和类别数初始化分类head bias
+    def bias_init(self):
+        """Initialize biases for classification heads."""
+        for a, b, s in zip(self.cv3, self.cv_color, self.stride):
+            # a[-1].bias.data[:] = math.log(5 / self.nc_num / (416 / s) ** 2)
+            a[-1].bias.data[:] = math.log(0.01 / (1 - 0.01))  # 初始置信度约 1%
+            # b[-1].bias.data[:] = math.log(5 / self.nc_color / (416 / s) ** 2)
+            b[-1].bias.data[:] = math.log(0.01 / (1 - 0.01))  # 初始置信度约 1%
+
+            
 
 
 class Classify(nn.Module):

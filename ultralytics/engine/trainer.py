@@ -431,7 +431,13 @@ class BaseTrainer:
                     self.tloss = self.loss_items if self.tloss is None else (self.tloss * i + self.loss_items) / (i + 1)
 
                 # Backward
-                self.scaler.scale(self.loss).backward()
+                try:
+                    self.scaler.scale(self.loss).backward()
+                except RuntimeError as e:
+                    print(f"[DEBUG] Backward error: {e}")
+                    print(f"[DEBUG] Loss value: {self.loss}")
+                    print(f"[DEBUG] Loss items: {self.loss_items}")
+                    raise
                 if ni - last_opt_step >= self.accumulate:
                     self.optimizer_step()
                     last_opt_step = ni

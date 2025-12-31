@@ -170,18 +170,22 @@ def kpt_iou(
     """Calculate Object Keypoint Similarity (OKS).
 
     Args:
-        kpt1 (torch.Tensor): A tensor of shape (N, 17, 3) representing ground truth keypoints.
-        kpt2 (torch.Tensor): A tensor of shape (M, 17, 3) representing predicted keypoints.
+        kpt1 (torch.Tensor): A tensor of shape (N, K, 2) or (N, K, 3) representing ground truth keypoints.
+        kpt2 (torch.Tensor): A tensor of shape (M, K, 2) or (M, K, 3) representing predicted keypoints.
         area (torch.Tensor): A tensor of shape (N,) representing areas from ground truth.
-        sigma (list): A list containing 17 values representing keypoint scales.
+        sigma (list): A list containing K values representing keypoint scales.
         eps (float, optional): A small value to avoid division by zero.
 
     Returns:
         (torch.Tensor): A tensor of shape (N, M) representing keypoint similarities.
     """
-    d = (kpt1[:, None, :, 0] - kpt2[..., 0]).pow(2) + (kpt1[:, None, :, 1] - kpt2[..., 1]).pow(2)  # (N, M, 17)
-    sigma = torch.tensor(sigma, device=kpt1.device, dtype=kpt1.dtype)  # (17, )
-    kpt_mask = kpt1[..., 2] != 0  # (N, 17)
+    d = (kpt1[:, None, :, 0] - kpt2[..., 0]).pow(2) + (kpt1[:, None, :, 1] - kpt2[..., 1]).pow(2)  # (N, M, K)
+    sigma = torch.tensor(sigma, device=kpt1.device, dtype=kpt1.dtype)  # (K, )
+    # Handle 2D keypoints (no visibility) - assume all visible
+    if kpt1.shape[-1] == 3:
+        kpt_mask = kpt1[..., 2] != 0  # (N, K)
+    else:
+        kpt_mask = torch.ones(kpt1.shape[:-1], device=kpt1.device, dtype=torch.bool)  # all visible
     e = d / ((2 * sigma).pow(2) * (area[:, None, None] + eps) * 2)  # from cocoeval
     # e = d / ((area[None, :, None] + eps) * sigma) ** 2 / 2  # from formula
     return ((-e).exp() * kpt_mask[:, None]).sum(-1) / (kpt_mask.sum(-1)[:, None] + eps)
@@ -390,9 +394,31 @@ class ConfusionMatrix(DataExportMixin):
         is_obb = gt_bboxes.shape[1] == 5  # check if boxes contains angle for OBB
         conf = 0.25 if conf in {None, 0.01 if is_obb else 0.001} else conf  # apply 0.25 if default val conf is passed
         no_pred = detections["cls"].shape[0] == 0
+
+        # Helper function to filter detections by confidence mask
+        def filter_by_mask(d, mask):
+            """Filter detections dict by boolean mask, handling multi-dimensional tensors."""
+            result = {}
+            # Only process basic detection fields for confusion matrix
+            basic_keys = {"bboxes", "conf", "cls"}
+            for k, v in d.items():
+                if k not in basic_keys:
+                    continue  # Skip keypoints, color_scores, etc.
+                if not isinstance(v, torch.Tensor):
+                    continue
+                if v.numel() == 0:
+                    result[k] = v
+                elif v.dim() == 1:
+                    result[k] = v[mask]
+                else:
+                    # For multi-dimensional tensors, index only first dim
+                    result[k] = v[mask]
+            return result
+
         if gt_cls.shape[0] == 0:  # Check if labels is empty
             if not no_pred:
-                detections = {k: detections[k][detections["conf"] > conf] for k in detections}
+                mask = detections["conf"] > conf
+                detections = filter_by_mask(detections, mask)
                 detection_classes = detections["cls"].int().tolist()
                 for i, dc in enumerate(detection_classes):
                     self.matrix[dc, self.nc] += 1  # FP
@@ -405,7 +431,8 @@ class ConfusionMatrix(DataExportMixin):
                 self._append_matches("FN", batch, i)
             return
 
-        detections = {k: detections[k][detections["conf"] > conf] for k in detections}
+        mask = detections["conf"] > conf
+        detections = filter_by_mask(detections, mask)
         gt_classes = gt_cls.int().tolist()
         detection_classes = detections["cls"].int().tolist()
         bboxes = detections["bboxes"]

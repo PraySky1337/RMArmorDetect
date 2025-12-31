@@ -1,7 +1,7 @@
 import onnx
 from onnxsim import simplify
 
-model = onnx.load("/home/sxs/RMArmorDetect/utils/best.onnx")
+model = onnx.load("/home/ljy/Desktop/RMArmorDetect/utils/best_fp32.onnx")
 
 model_simp, check = simplify(
     model,
