@@ -2,7 +2,7 @@
 model: "ultralytics/cfg/models/11/yolo11-pose.yaml"  # 模型结构或权重
 epochs: 350       # 训练轮数
 imgsz: 640            # 输入尺寸
-batch: 256              # batch size
+batch: 128             # batch size
 device: "0,1"                # GPU id，CPU 可写 "cpu"
 workers: 8               # dataloader workers 数
 cache: false             # 是否缓存数据到内存/磁盘
