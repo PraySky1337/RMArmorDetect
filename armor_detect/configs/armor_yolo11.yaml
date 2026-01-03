@@ -1,0 +1,70 @@
+# Armor Detection Model Configuration
+# Based on YOLO11-pose with dual classification branches (number + color)
+# Keypoint-only detection without bounding boxes
+
+# Class configuration
+nc: 12            # Total classes (nc_num * some factor, for compatibility)
+nc_num: 8         # Number classes (1-8 for armor numbers)
+nc_color: 4       # Color classes (B, R, N, P)
+kpt_shape: [4, 2] # 4 keypoints, 2D coordinates (x, y)
+
+# WingLoss parameters for keypoint regression
+wing_omega: 10.0  # Threshold between logarithmic and linear region
+wing_epsilon: 2.0 # Smoothing parameter for logarithmic part
+
+# Loss weights
+pose: 12.0        # Keypoint loss weight
+kobj: 1.0         # Keypoint objectness weight
+cls: 0.5          # Number classification weight
+color: 0.5        # Color classification weight
+
+# Focal Loss parameters
+focal_gamma: 1.5  # Gamma for hard example mining
+
+# Model scaling constants
+# Format: [depth, width, max_channels]
+scales:
+  n: [0.375, 0.1875, 512]  # Nano: fastest, smallest
+  s: [0.50, 0.50, 1024]    # Small: balanced
+  m: [0.50, 1.00, 512]     # Medium: higher accuracy
+  l: [1.00, 1.00, 512]     # Large: high accuracy
+  x: [1.00, 1.50, 512]     # XLarge: highest accuracy
+
+# YOLO11 Backbone with C3k2 + SPPF
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv, [32, 3, 2]]         # 0-P1/2: Initial conv
+  - [-1, 1, Conv, [64, 3, 2]]         # 1-P2/4: Downsample
+  - [-1, 1, C3k2, [128, False, 0.25]] # 2: Lightweight C3k2
+  - [-1, 1, Conv, [128, 3, 2]]        # 3-P3/8: Feature scale 1
+  - [-1, 1, C3k2, [256, False, 0.25]] # 4: Lightweight C3k2
+  - [-1, 1, Conv, [256, 3, 2]]        # 5-P4/16: Feature scale 2
+  - [-1, 1, C3k2, [256, True]]        # 6: Standard C3k2
+  - [-1, 1, Conv, [512, 3, 2]]        # 7-P5/32: Feature scale 3
+  - [-1, 1, C3k2, [512, True]]        # 8: Standard C3k2
+  - [-1, 1, SPPF, [512, 5]]           # 9: Spatial Pyramid Pooling Fast
+  - [-1, 1, C3k2, [512, False]]       # 10: Final backbone layer
+
+# YOLO11 Head with FPN + PAN structure
+head:
+  # FPN: Top-down pathway
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 6], 1, Concat, [1]]        # cat backbone P4
+  - [-1, 1, C3k2, [256, False]]      # 12: P4 fusion
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 4], 1, Concat, [1]]        # cat backbone P3
+  - [-1, 1, C3k2, [128, False]]      # 15: P3/8 (small objects)
+
+  # PAN: Bottom-up pathway
+  - [-1, 1, Conv, [128, 3, 2]]
+  - [[-1, 12], 1, Concat, [1]]       # cat head P4
+  - [-1, 1, C3k2, [256, False]]      # 18: P4 fusion
+
+  - [-1, 1, Conv, [256, 3, 2]]
+  - [[-1, 10], 1, Concat, [1]]       # cat head P5
+  - [-1, 1, C3k2, [512, True]]       # 21: P5 (large objects)
+
+  # Detection head: ArmorPoseHead with dual classification
+  # Args: [nc_num, nc_color, kpt_shape]
+  - [[15, 18, 21], 1, Pose, [8, 4, [4, 2]]]
