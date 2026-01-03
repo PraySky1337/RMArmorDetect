@@ -12,9 +12,9 @@ from ultralytics import YOLO
 from ultralytics.utils import SETTINGS
 
 SETTINGS.update({
-    "datasets_dir": "/home/rry/RMArmorPose/datasets",
-    "weights_dir": "/home/rry/RMArmorPose/weights",
-    "runs_dir": "/home/ljy/RMArmorPose/runs",
+    "datasets_dir": "/home/rry/RMArmorDetect/datasets",
+    "weights_dir": "/home/rry/RMArmorDetect/weights",
+    "runs_dir": "/home/rry/RMArmorDetect/runs",
 })
 
 ROOT = Path(__file__).resolve().parent
@@ -23,15 +23,15 @@ LBL_DIR = ROOT / "datasets" / "labels"
 SPLIT_DIR = ROOT / "datasets" / "splits"
 DATA_YAML = ROOT / "datasets" / "rmarmor-pose.yaml"
 TRAIN_CFG = ROOT / "train_config.yaml"
-
+ 
 COLOR_NAMES = ["B","R","N","P"]
 CLASS_NAMES = [
-    "G",  
-    "1",  
-    "2",  
-    "3",  
-    "4",  
-    "O",  
+    "Gs",  
+    "1b",  
+    "2s",  
+    "3s",  
+    "4s",  
+    "Os",  
     "Bs", 
     "Bb",  
 ] 

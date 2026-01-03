@@ -7,17 +7,18 @@ IN_DELETE = 0x00000200
 EVENT_MASK = IN_MODIFY | IN_CREATE | IN_DELETE
 
 libc = ctypes.CDLL("libc.so.6")
-SRC = "/home/sxs/RMArmorDetect"
-DST = "rry@192.168.10.5:/home/rry/RMArmorPose"
+SRC = "/home/ljy/Desktop/RMArmorDetect"
+DST = "rry@192.168.50.226:/home/rry/RMArmorDetect"
 PORT = "22"
 
 # 需要忽略的目录（相对于 SRC）
 # 例如忽略 SRC/runs 和 SRC/logs/tmp
 IGNORE_DIRS = [
     "datasets/",
-    ".git/"
+    ".git/",
+    "runs/"
 ]
-
+ 
 # 预先算好需要忽略的绝对路径，方便后面判断
 IGNORE_ABS = {os.path.join(SRC, d) for d in IGNORE_DIRS}
 

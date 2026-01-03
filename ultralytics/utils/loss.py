@@ -585,6 +585,9 @@ class v8PoseLoss(v8DetectionLoss):
         self.bce_num = nn.BCEWithLogitsLoss(reduction="none")  # number branch
         self.bce_color = nn.BCEWithLogitsLoss(reduction="none")  # color branch
 
+        # Focal Loss gamma for hard example mining
+        self.focal_gamma = 1.5  # 温和的gamma值，平衡精度和召回
+
     #前向计算
     def __call__(self, preds, batch):
         """
@@ -658,7 +661,8 @@ class v8PoseLoss(v8DetectionLoss):
             gt_kpt_centers = keypoints_px.mean(dim=1)  # (num_gt, 2) GT关键点中心
 
             batch_gt_counters = {}  # batch_id -> current count
-            topk = 10  # 选top-k最近anchor作为正样本
+            topk = 5  # 选top-k最近anchor作为正样本（从10减至5，温和收紧）
+            max_dist_ratio = 1.2  # 距离阈值比例（从1.5减至1.2，温和收紧）
 
             #计算每个GT到所有anchor的真实距离
             for gt_idx, (b_idx, center) in enumerate(zip(batch_idx_flat.tolist(), gt_kpt_centers.tolist())):
@@ -673,6 +677,14 @@ class v8PoseLoss(v8DetectionLoss):
                 # Find top-k closest anchors to this keypoint center (both in pixel coords)
                 center_tensor = torch.tensor(center, device=self.device)
                 dists = torch.norm(anchor_points_px - center_tensor, dim=1)
+
+                # 新增：计算距离阈值（基于 stride）
+                max_dist = stride_tensor.squeeze() * max_dist_ratio  # 每个 anchor 的最大允许距离
+                valid_dist_mask = dists < max_dist.squeeze()
+
+                # 在距离阈值内选 top-k
+                valid_dists = dists.clone()
+                valid_dists[~valid_dist_mask] = float('inf')  # 超出距离的设为无穷大
 
                 # Get top-k closest anchors
                 k = min(topk, len(dists))
@@ -738,21 +750,20 @@ class v8PoseLoss(v8DetectionLoss):
                             num_class_targets[b, anchor_idx, class_id] = 1.0
 
 
-        # Only compute cls loss for foreground anchors (avoid training model to output low conf for all)
-        # if fg_mask.sum() > 0:
-        #     fg_cls_pred = cls_num_pred[fg_mask]  # (num_fg, nc_num)
-        #     fg_cls_target = num_class_targets[fg_mask]  # (num_fg, nc_num)
-        #     # loss[2] = self.bce_num(fg_cls_pred, fg_cls_target).sum() / max(fg_mask.sum(), 1.0)
-        #     loss[2] = self.bce_num(fg_cls_pred, fg_cls_target).mean()
-        # else:
-        #     # Use prediction tensor to maintain gradient graph
-        #     loss[2] = (cls_num_pred * 0).sum()
-        # 加权loss：前景权重=1.0, 背景权重=0.25
-        weight = fg_mask.float() * 0.75 + 0.25  # fg=1.0, bg=0.25
-        loss[2] = (self.bce_num(cls_num_pred, num_class_targets) *
-        weight.unsqueeze(-1)).sum() / max(num_anchors, 1.0)
-       
-
+        #Only compute cls loss for foreground anchors with Focal Loss
+        if fg_mask.sum() > 0:
+            fg_cls_pred = cls_num_pred[fg_mask]  # (num_fg, nc_num)
+            fg_cls_target = num_class_targets[fg_mask]  # (num_fg, nc_num)
+            cls_loss = self.bce_num(fg_cls_pred, fg_cls_target.to(fg_cls_pred.dtype))
+            # Focal Loss: 降低易分样本权重，聚焦困难样本
+            pt = torch.exp(-cls_loss)
+            focal_weight = (1 - pt) ** self.focal_gamma
+            loss[2] = (cls_loss * focal_weight).mean()
+        else:
+            # Use prediction tensor to maintain gradient graph
+            loss[2] = (cls_num_pred * 0).sum()
+        
+    
 
         # ---------- color class loss ----------
         if "color" in batch:
@@ -779,11 +790,15 @@ class v8PoseLoss(v8DetectionLoss):
                                 color_targets[b, anchor_idx, color_id] = 1.0
 
 
-            # Only compute color loss for foreground anchors
+            # Only compute color loss for foreground anchors with Focal Loss
             if fg_mask.sum() > 0:
                 fg_color_pred = cls_color_pred[fg_mask]
                 fg_color_target = color_targets[fg_mask]
-                loss[3] = self.bce_color(fg_color_pred, fg_color_target).sum() / max(fg_mask.sum(), 1.0)
+                color_loss = self.bce_color(fg_color_pred, fg_color_target.to(fg_color_pred.dtype))
+                # Focal Loss: 降低易分样本权重，聚焦困难样本
+                pt = torch.exp(-color_loss)
+                focal_weight = (1 - pt) ** self.focal_gamma
+                loss[3] = (color_loss * focal_weight).mean()
             else:
                 # Use prediction tensor to maintain gradient graph
                 loss[3] = (cls_color_pred * 0).sum()
