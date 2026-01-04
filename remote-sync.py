@@ -18,7 +18,7 @@ IGNORE_DIRS = [
     ".git/",
     "runs/"
 ]
- 
+  
 # 预先算好需要忽略的绝对路径，方便后面判断
 IGNORE_ABS = {os.path.join(SRC, d) for d in IGNORE_DIRS}
 

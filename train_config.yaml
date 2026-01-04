@@ -1,73 +1,71 @@
 # ================= 基础训练设置 =================
-model: "ultralytics/cfg/models/11/yolo11-pose.yaml"  # 模型结构或权重
-epochs: 300        # 训练轮数
-imgsz: 416            # 输入尺寸
-batch: 256             # batch size
-device: "0,1"                # GPU id，CPU 可写 "cpu"
-workers: 8               # dataloader workers 数
-cache: false             # 是否缓存数据到内存/磁盘
+epochs: 200
+imgsz: 416
+batch: 256
+device: "0,1"
+workers: 32
+cache: "ram"
+
+# NMS和推理设置
+iou: 0.45  # NMS IoU阈值，从0.7降低到0.45以减少重复检测
+conf: 0.25 # 置信度阈值
 
 # train script only
-train_ratio: 0.91         # 你自己用来做 train/val 划分的比例
-seed: 0                  # 随机种子（也传给 YOLO）
+train_ratio: 0.91
+seed: 0
 
 # ================= 优化器 & 学习率 =================
-optimizer: "AdamW"       # "SGD" | "Adam" | "AdamW"
-lr0: 0.00025             # 初始学习率（原0.00025，降低约3倍）
-lrf: 0.01                # 最终学习率比例（与 lr0 相乘）
-momentum: 0.937          # 动量（SGD/Adam 等）
-weight_decay: 0.0008     # 权重衰减（原0.0005，增加正则化）
+optimizer: "AdamW"
+lr0: 0.00025
+lrf: 0.01
+momentum: 0.937
+weight_decay: 0.0008
 
-warmup_epochs: 5       # warmup 轮数（原8，减少）
-warmup_momentum: 0.8     # warmup 起始动量
-warmup_bias_lr: 0.1      # bias 的 warmup 学习率
-cos_lr: true             # 是否使用余弦退火
-
-# ================= 损失函数权重（仅关键点模式，无bbox） =================
-pose: 3.0               # 关键点回归 loss 权重
-kobj: 2.0                # 关键点 objectness loss 权重
-cls: 2.0                # 分类 loss 权重
-color: 1.0               # 颜色分类 loss 权重
-label_smoothing: 0.05    # 标签平滑系数 (0.0-0.1, 防止过度自信)
+warmup_epochs: 5
+warmup_momentum: 0.8
+warmup_bias_lr: 0.1
+cos_lr: true
 
 # ================= 数据增强超参数 =================
-hsv_h: 0.08              # 色调扰动
-hsv_s: 0.9               # 饱和度扰动
-hsv_v: 0.9               # 亮度扰动
+hsv_h: 0.08
+hsv_s: 0.9
+hsv_v: 0.9
 
-degrees: 15.0            # 旋转角度（原5.0，增强）
-translate: 0.2           # 平移比例（原0.15，增强）
-scale: 0.7               # 尺度缩放范围（原0.6，增强）
-shear: 0.0               # 剪切
-perspective: 0.0          # 透视变换
+degrees: 15.0
+translate: 0.2
+scale: 0.7
+shear: 0.0
+perspective: 0.0
 
-flipud: 0.0              # 上下翻转概率
-fliplr: 0.0              # 左右翻转概率
+flipud: 0.0 
+fliplr: 0.0
 
-mosaic: 1.0              # mosaic 概率
-mixup: 0.1                # mixup 概率（原0.05，增强）
-copy_paste: 0.0          # copy-paste 概率
-erasing: 0.5             # 随机擦除概率（原0.4，增强） 
+mosaic: 0.8
+mixup: 0.1
+copy_paste: 0.0
+erasing: 0.5
 
+close_mosaic: 50
 
-close_mosaic: 150         # 最后 N 个 epoch 关闭 mosaic
-
-# ================= 训练流程控制 ================= 
-patience: 50             # 早停耐心值
-resume: false            # 是否从 last.pt 继续训练
-pretrained: true         # 是否加载预训练权重（对于 .yaml 结构有效） 
-amp: true                # 混合精度训练
-deterministic: false     # 是否强制确定性（会稍慢）
-val: true                # 训练过程中是否做验证  
+# ================= 训练流程控制 =================
+patience: 50
+resume: false
+pretrained: true
+amp: true
+deterministic: false
+val: true
 
 # ================= 日志 & 权重保存 =================
-tensorboard: true        # 脚本里用 SETTINGS 控制
-project: "/home/rry/RMArmorDetect/runs"   # 日志根目录
-name: "rmarmor_yolo11_pose"                  # 本次训练子目录
-exist_ok: true          # 已存在同名目录是否复用
-save: true              # 保存 best.pt / last.pt
-save_period: -1         # >0 时每 N epoch 额外保存一次
-plots: true             # 保存训练曲线 / 样本可视化图
+tensorboard: true
+project: "/home/rry/RMArmorDetect/runs"
+name: "armor"
+exist_ok: true
+save: true
+save_period: -1
+plots: true
 
-
-# https://docs.ultralytics.com/zh/modes/train/#train-settings
+# ================= 说明 =================
+# Loss 权重已在 armor_detect/configs/armor_yolo11.yaml 中定义:
+#   pose: 12.0, kobj: 1.0, cls: 0.5, color: 0.5
+#   focal_gamma: 1.5
+#   wing_omega: 10.0, wing_epsilon: 2.0

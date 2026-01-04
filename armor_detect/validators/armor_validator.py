@@ -2,7 +2,7 @@
 Armor Validator - Validation class for armor detection models.
 
 This module provides the ArmorValidator class for evaluating armor detection models
-with dual classification branches (number + color).
+with triple classification branches (number + color + size).
 """
 
 from __future__ import annotations
@@ -17,24 +17,28 @@ from ultralytics.models.yolo.detect import DetectionValidator
 from ultralytics.utils import LOGGER, ops
 from ultralytics.utils.metrics import OKS_SIGMA, PoseMetrics, kpt_iou
 
-from armor_detect.utils import NUMBER_CLASSES, COLOR_CLASSES
+from armor_detect.utils import CLASS_NAMES, COLOR_NAMES, SIZE_NAMES
 
 
 class ArmorValidator(DetectionValidator):
-    """Validator for armor detection with dual classification branches.
+    """Validator for armor detection with triple classification branches.
 
     This validator handles pose estimation without bounding boxes, using keypoints
-    for both localization and IoU computation. It supports dual classification
-    branches for number (1-8) and color (B, R, N, P) prediction.
+    for both localization and IoU computation. It supports triple classification
+    branches for number (G, 1-5, O, B), color (B, R, N, P), and size (s, b) prediction.
 
     Attributes:
         sigma (np.ndarray): Sigma values for OKS calculation.
         kpt_shape (list[int]): Shape of keypoints [nkpt, ndim].
         nc_num (int): Number of number classes.
         nc_color (int): Number of color classes.
+        nc_size (int): Number of size classes.
         color_names (list[str]): Names of color classes.
+        size_names (list[str]): Names of size classes.
         color_correct (int): Count of correct color predictions.
         color_total (int): Total color predictions.
+        size_correct (int): Count of correct size predictions.
+        size_total (int): Total size predictions.
     """
 
     def __init__(
@@ -57,7 +61,9 @@ class ArmorValidator(DetectionValidator):
         self.kpt_shape = None
         self.nc_num = 8
         self.nc_color = 4
-        self.color_names = COLOR_CLASSES
+        self.nc_size = 2
+        self.color_names = COLOR_NAMES
+        self.size_names = SIZE_NAMES
         self.args.task = "pose"
         self.metrics = PoseMetrics()
 
@@ -65,8 +71,12 @@ class ArmorValidator(DetectionValidator):
         self.color_correct = 0
         self.color_total = 0
 
+        # Size classification statistics
+        self.size_correct = 0
+        self.size_total = 0
+
     def preprocess(self, batch: dict[str, Any]) -> dict[str, Any]:
-        """Preprocess batch by converting keypoints and color data to float.
+        """Preprocess batch by converting keypoints, color, and size data to float.
 
         Args:
             batch: Input batch dictionary.
@@ -78,6 +88,8 @@ class ArmorValidator(DetectionValidator):
         batch["keypoints"] = batch["keypoints"].float()
         if "color" in batch:
             batch["color"] = batch["color"].to(self.device)
+        if "size" in batch:
+            batch["size"] = batch["size"].to(self.device)
         return batch
 
     def get_desc(self) -> str:
@@ -108,17 +120,22 @@ class ArmorValidator(DetectionValidator):
         nkpt = self.kpt_shape[0]
         self.sigma = OKS_SIGMA if is_pose else np.ones(nkpt) / nkpt
 
-        # Get nc_num from model head
+        # Get nc_num and nc_size from model head
         pose_head = self._find_pose_head(model)
         if pose_head:
             self.nc_num = pose_head.nc_num
+            self.nc_size = getattr(pose_head, 'nc_size', 2)
         else:
             self.nc_num = self.data.get("nc", 8)
+            self.nc_size = self.data.get("nc_size", 2)
 
-        self.nc_color = len(self.data.get("color_names", COLOR_CLASSES))
-        self.color_names = self.data.get("color_names", COLOR_CLASSES)
+        self.nc_color = len(self.data.get("color_names", COLOR_NAMES))
+        self.color_names = self.data.get("color_names", COLOR_NAMES)
+        self.size_names = self.data.get("size_names", SIZE_NAMES)
         self.color_correct = 0
         self.color_total = 0
+        self.size_correct = 0
+        self.size_total = 0
 
         # Override names from data config
         if "names" in self.data:
@@ -158,6 +175,7 @@ class ArmorValidator(DetectionValidator):
         bs, channels, na = preds.shape
         nc_num = self.nc_num
         nc_color = self.nc_color
+        nc_size = self.nc_size
         nkpt, ndim = self.kpt_shape
         nk = nkpt * ndim
 
@@ -168,11 +186,13 @@ class ArmorValidator(DetectionValidator):
             # Split predictions
             num_scores = pred_data[:nc_num]
             color_scores = pred_data[nc_num : nc_num + nc_color]
-            kpt_data = pred_data[nc_num + nc_color :]
+            size_scores = pred_data[nc_num + nc_color : nc_num + nc_color + nc_size]
+            kpt_data = pred_data[nc_num + nc_color + nc_size :]
 
             # Get confidence from number classification
             num_conf, cls_indices = num_scores.max(dim=0)
             color_indices = color_scores.argmax(dim=0)
+            size_indices = size_scores.argmax(dim=0)
 
             # Confidence threshold filtering
             conf_thres = 0.4
@@ -187,6 +207,7 @@ class ArmorValidator(DetectionValidator):
             valid_conf = num_conf[valid_mask]
             valid_cls = cls_indices[valid_mask]
             valid_color = color_indices[valid_mask]
+            valid_size = size_indices[valid_mask]
             valid_kpts = kpt_data[:, valid_mask].t().view(-1, nkpt, ndim)
 
             # Apply keypoint NMS
@@ -200,6 +221,7 @@ class ArmorValidator(DetectionValidator):
                 "conf": valid_conf[keep],
                 "keypoints": valid_kpts[keep],
                 "color_cls": valid_color[keep],
+                "size_cls": valid_size[keep],
             })
 
         return results
@@ -222,6 +244,7 @@ class ArmorValidator(DetectionValidator):
             "conf": torch.zeros((0,), device=device),
             "keypoints": torch.zeros((0, nkpt, ndim), device=device),
             "color_cls": torch.zeros((0,), dtype=torch.long, device=device),
+            "size_cls": torch.zeros((0,), dtype=torch.long, device=device),
         }
 
     def _kpt_nms(
@@ -296,6 +319,18 @@ class ArmorValidator(DetectionValidator):
                         if pc in gt_color:
                             self.color_correct += 1
 
+            # Update size accuracy if available
+            if "size" in batch and "size_cls" in pred:
+                gt_size = batch["size"][idx]
+                pred_size = pred["size_cls"]
+
+                if len(pred_size) > 0 and len(gt_size) > 0:
+                    # Simple accuracy: check if any prediction matches
+                    self.size_total += len(gt_size)
+                    for ps in pred_size:
+                        if ps in gt_size:
+                            self.size_correct += 1
+
             # Call parent update_metrics for standard metrics
             super().update_metrics(preds, batch)
 
@@ -307,6 +342,11 @@ class ArmorValidator(DetectionValidator):
         if self.color_total > 0:
             color_acc = self.color_correct / self.color_total * 100
             LOGGER.info(f"Color accuracy: {color_acc:.2f}%")
+
+        # Log size accuracy
+        if self.size_total > 0:
+            size_acc = self.size_correct / self.size_total * 100
+            LOGGER.info(f"Size accuracy: {size_acc:.2f}%")
 
 
 # Alias for backward compatibility

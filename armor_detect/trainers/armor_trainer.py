@@ -2,7 +2,7 @@
 Armor Trainer - Training class for armor detection models.
 
 This module provides the ArmorTrainer class for training armor detection models
-with dual classification branches (number + color).
+with triple classification branches (number + color + size).
 """
 
 from __future__ import annotations
@@ -18,16 +18,16 @@ from ultralytics.utils.plotting import plot_images
 
 
 class ArmorTrainer(yolo.detect.DetectionTrainer):
-    """Trainer class for armor detection with dual classification branches.
+    """Trainer class for armor detection with triple classification branches.
 
     This trainer handles pose estimation with keypoint-only detection (no bounding boxes)
-    and dual classification (number class + color class).
+    and triple classification (number class + color class + size class).
 
     Attributes:
         args (dict): Configuration arguments for training.
         model (PoseModel): The pose estimation model being trained.
         data (dict): Dataset configuration including keypoint shape information.
-        loss_names (tuple): Names of the loss components (pose, kobj, cls, color).
+        loss_names (tuple): Names of the loss components (pose, kobj, cls, color, size).
 
     Example:
         >>> from armor_detect.trainers import ArmorTrainer
@@ -100,7 +100,7 @@ class ArmorTrainer(yolo.detect.DetectionTrainer):
         Returns:
             ArmorValidator instance configured for armor detection.
         """
-        self.loss_names = ("pose_loss", "kobj_loss", "cls_loss", "color_loss")
+        self.loss_names = ("pose_loss", "kobj_loss", "cls_loss", "color_loss", "size_loss")
         return yolo.pose.PoseValidator(
             self.test_loader,
             save_dir=self.save_dir,

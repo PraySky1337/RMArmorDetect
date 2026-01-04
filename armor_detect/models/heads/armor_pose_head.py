@@ -1,8 +1,8 @@
 """
-Armor Pose Head - Detection head for armor detection with dual classification branches.
+Armor Pose Head - Detection head for armor detection with triple classification branches.
 
 This module provides the ArmorPoseHead class for keypoint-based armor detection
-without bounding boxes, using dual classification branches for number and color.
+without bounding boxes, using triple classification branches for number, color, and size.
 """
 
 import math
@@ -19,24 +19,27 @@ from armor_detect.utils import INITIAL_CONF
 class ArmorPoseHead(nn.Module):
     """YOLO Pose head for armor detection WITHOUT bounding box.
 
-    This class predicts keypoints and two classification branches for armor detection:
-    - Number class (1-8): predicted by cv3 branch
-    - Color class (R, B, N, P): predicted by cv_color branch
+    This class predicts keypoints and three classification branches for armor detection:
+    - Number class (G, 1-5, O, B): predicted by cv3 branch
+    - Color class (B, R, N, P): predicted by cv_color branch
+    - Size class (s, b): predicted by cv_size branch
     - Keypoints: 4 corner points with 2D coordinates (defines object location)
 
     NO bounding box prediction - keypoints alone define the armor location.
 
-    The label format is: color cls x1 y1 x2 y2 x3 y3 x4 y4
-    During inference, the two class branches are merged into joint predictions.
+    The label format is: color size cls x1 y1 x2 y2 x3 y3 x4 y4
+    During inference, the three class branches are merged into joint predictions.
 
     Attributes:
-        nc_num (int): Number of number classes (1-8).
-        nc_color (int): Number of color classes (R, B, N, P).
+        nc_num (int): Number of number classes (G, 1-5, O, B).
+        nc_color (int): Number of color classes (B, R, N, P).
+        nc_size (int): Number of size classes (s, b).
         kpt_shape (tuple): Number of keypoints and dimensions (4, 2 for 4 corners).
         nk (int): Total number of keypoint values.
         nl (int): Number of detection layers.
         cv3 (nn.ModuleList): Convolution layers for number classification.
         cv_color (nn.ModuleList): Convolution layers for color classification.
+        cv_size (nn.ModuleList): Convolution layers for size classification.
         cv4 (nn.ModuleList): Convolution layers for keypoint prediction.
     """
 
@@ -49,16 +52,18 @@ class ArmorPoseHead(nn.Module):
 
     def __init__(
         self,
-        nc_num: int = 8,
+        nc_num: int = 8,  # 8类: G, 1, 2, 3, 4, 5, O, B
         nc_color: int = 4,
+        nc_size: int = 2,
         kpt_shape: tuple = (4, 2),
         ch: tuple = (),
     ):
-        """Initialize ArmorPoseHead with dual classification branches and keypoint prediction.
+        """Initialize ArmorPoseHead with triple classification branches and keypoint prediction.
 
         Args:
-            nc_num: Number of number classes (1-8 for armor numbers).
-            nc_color: Number of color classes (R, B, N, P).
+            nc_num: Number of number classes (G, 1-5, O, B for armor numbers).
+            nc_color: Number of color classes (B, R, N, P).
+            nc_size: Number of size classes (s, b for small/big armor).
             kpt_shape: Number of keypoints and dimensions (4, 2 for x,y coordinates).
             ch: Tuple of channel sizes from backbone feature maps.
         """
@@ -69,11 +74,12 @@ class ArmorPoseHead(nn.Module):
 
         self.nc_num = nc_num
         self.nc_color = nc_color
+        self.nc_size = nc_size
         self.nc = nc_num  # For compatibility with base detection classes
         self.kpt_shape = kpt_shape
         self.nk = kpt_shape[0] * kpt_shape[1]  # 8 for 4 points x 2D
         self.nl = len(ch)  # Number of detection layers
-        self.no = nc_num + nc_color + self.nk  # Outputs per anchor (no bbox)
+        self.no = nc_num + nc_color + nc_size + self.nk  # Outputs per anchor (no bbox)
 
         # Stride will be computed dynamically during first forward pass
         self.stride = torch.zeros(self.nl)
@@ -101,6 +107,17 @@ class ArmorPoseHead(nn.Module):
             for x in ch
         )
 
+        # Size classification branch
+        c3_size = max(ch[0], min(self.nc_size, 100))
+        self.cv_size = nn.ModuleList(
+            nn.Sequential(
+                nn.Sequential(DWConv(x, x, 3), Conv(x, c3_size, 1)),
+                nn.Sequential(DWConv(c3_size, c3_size, 3), Conv(c3_size, c3_size, 1)),
+                nn.Conv2d(c3_size, self.nc_size, 1),
+            )
+            for x in ch
+        )
+
         # Keypoint prediction branch
         c4 = max(ch[0] // 4, self.nk)
         self.cv4 = nn.ModuleList(
@@ -109,14 +126,14 @@ class ArmorPoseHead(nn.Module):
         )
 
     def forward(self, x: list[torch.Tensor]) -> torch.Tensor | tuple:
-        """Perform forward pass with dual classification branches and keypoint prediction.
+        """Perform forward pass with triple classification branches and keypoint prediction.
 
         Args:
             x: List of feature maps from backbone/neck.
 
         Returns:
-            During training: (feats, (cls_num, cls_color, kpt))
-            During inference: (combined_output, (feats, (cls_num, cls_color, kpt)))
+            During training: (feats, (cls_num, cls_color, cls_size, kpt))
+            During inference: (combined_output, (feats, (cls_num, cls_color, cls_size, kpt)))
             During export: combined tensor
         """
         bs = x[0].shape[0]
@@ -135,13 +152,16 @@ class ArmorPoseHead(nn.Module):
         cls_color = torch.cat(
             [self.cv_color[i](x[i]).view(bs, self.nc_color, -1) for i in range(self.nl)], -1
         )
+        cls_size = torch.cat(
+            [self.cv_size[i](x[i]).view(bs, self.nc_size, -1) for i in range(self.nl)], -1
+        )
 
         # Save original features for loss computation
         feats = [xi.clone() for xi in x]
 
         # Training mode
         if self.training:
-            return feats, (cls_num, cls_color, kpt)
+            return feats, (cls_num, cls_color, cls_size, kpt)
 
         # Inference mode - initialize anchors and strides
         shape = x[0].shape  # BCHW
@@ -157,16 +177,17 @@ class ArmorPoseHead(nn.Module):
         # Get classification predictions
         cls_num_sig = cls_num.sigmoid()
         cls_color_sig = cls_color.sigmoid()
+        cls_size_sig = cls_size.sigmoid()
 
         if self.export:
             # Export mode: merge into joint class + keypoints
-            joint_cls = self._merge_branches(cls_num, cls_color)
+            joint_cls = self._merge_branches(cls_num, cls_color, cls_size)
             joint_cls = joint_cls.permute(0, 2, 1)
             return torch.cat([joint_cls, pred_kpt], 1)
 
         # Validation mode: output separately
-        combined = torch.cat([cls_num_sig, cls_color_sig, pred_kpt], 1)
-        return (combined, (feats, (cls_num, cls_color, kpt)))
+        combined = torch.cat([cls_num_sig, cls_color_sig, cls_size_sig, pred_kpt], 1)
+        return (combined, (feats, (cls_num, cls_color, cls_size, kpt)))
 
     def _init_stride(self, x: list[torch.Tensor]) -> None:
         """Initialize stride from feature map sizes.
@@ -185,25 +206,35 @@ class ArmorPoseHead(nn.Module):
         self._stride_initialized = True
 
     def _merge_branches(
-        self, cls_num: torch.Tensor, cls_color: torch.Tensor
+        self, cls_num: torch.Tensor, cls_color: torch.Tensor, cls_size: torch.Tensor
     ) -> torch.Tensor:
-        """Merge number and color classification outputs into joint predictions.
+        """Merge number, color, and size classification outputs into joint predictions.
 
         Args:
             cls_num: Number classification logits (bs, nc_num, na)
             cls_color: Color classification logits (bs, nc_color, na)
+            cls_size: Size classification logits (bs, nc_size, na)
 
         Returns:
-            Joint probability matrix (bs, na, nc_color * nc_num)
+            Joint probability matrix (bs, na, nc_color * nc_size * nc_num)
         """
         prob_num = cls_num.sigmoid().permute(0, 2, 1)  # (bs, na, nc_num)
         prob_color = cls_color.sigmoid().permute(0, 2, 1)  # (bs, na, nc_color)
+        prob_size = cls_size.sigmoid().permute(0, 2, 1)  # (bs, na, nc_size)
 
         bs, na, _ = prob_num.shape
-        prob_color_flat = prob_color.reshape(bs * na, self.nc_color, 1)
-        prob_num_flat = prob_num.reshape(bs * na, 1, self.nc_num)
-        joint_prob = torch.bmm(prob_color_flat, prob_num_flat)
-        return joint_prob.view(bs, na, self.nc_color * self.nc_num)
+
+        # Compute joint probability: color x size x num
+        # Result shape: (bs, na, nc_color * nc_size * nc_num)
+        joint_prob = torch.zeros(bs, na, self.nc_color * self.nc_size * self.nc_num, device=cls_num.device)
+
+        for c in range(self.nc_color):
+            for s in range(self.nc_size):
+                for n in range(self.nc_num):
+                    idx = c * self.nc_size * self.nc_num + s * self.nc_num + n
+                    joint_prob[:, :, idx] = prob_color[:, :, c] * prob_size[:, :, s] * prob_num[:, :, n]
+
+        return joint_prob
 
     def _kpts_decode(self, bs: int, kpts: torch.Tensor) -> torch.Tensor:
         """Decode keypoints from raw predictions to pixel coordinates.
@@ -263,9 +294,10 @@ class ArmorPoseHead(nn.Module):
         Sets initial confidence to approximately 1% to prevent early training instability.
         """
         initial_bias = math.log(INITIAL_CONF / (1 - INITIAL_CONF))
-        for a, b in zip(self.cv3, self.cv_color):
+        for a, b, c in zip(self.cv3, self.cv_color, self.cv_size):
             a[-1].bias.data[:] = initial_bias
             b[-1].bias.data[:] = initial_bias
+            c[-1].bias.data[:] = initial_bias
 
 
 # Alias for backward compatibility

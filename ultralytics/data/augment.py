@@ -856,26 +856,34 @@ class Mosaic(BaseMixTransform):
         colors = []
         cls_list = []
         instances = []
+        sizes = []
         imgsz = self.imgsz * 2  # mosaic imgsz
-        
+
         for labels in mosaic_labels:
             # 转换color为Tensor（如果还不是）
             color = labels["color"]
             if isinstance(color, np.ndarray):
                 color = torch.from_numpy(color)
             colors.append(color)
-            
+
+            # 转换size为Tensor（如果还不是）
+            size = labels.get("size", np.zeros_like(labels["cls"], dtype=np.int64))
+            if isinstance(size, np.ndarray):
+                size = torch.from_numpy(size)
+            sizes.append(size)
+
             # 转换cls为numpy数组（如果还不是）
             cls = labels["cls"]
             if isinstance(cls, torch.Tensor):
                 cls = cls.cpu().numpy()
             cls_list.append(cls)
-            
+
             instances.append(labels["instances"])
 
         # 拼接所有数据
         cls = np.concatenate(cls_list, 0)
         color = torch.cat(colors, 0)  # (N, 1) tensor
+        size = torch.cat(sizes, 0)  # (N, 1) tensor
         final_instances = Instances.concatenate(instances, axis=0)
 
         # 处理边界框
@@ -885,6 +893,7 @@ class Mosaic(BaseMixTransform):
         # 应用过滤
         cls = cls[good]
         color = color[good]
+        size = size[good]
 
         # 构建最终标签字典 - 保持cls为原始数字类别，不与color组合
         final_labels = {
@@ -894,6 +903,7 @@ class Mosaic(BaseMixTransform):
             "cls": cls,  # 保持原始数字类别 (0-7)
             "instances": final_instances,
             "color": color,  # 保持颜色类别 (0-3)
+            "size": size,  # 保持尺寸类别 (0-1)
             "mosaic_border": self.border,
         }
 
@@ -959,10 +969,12 @@ class MixUp(BaseMixTransform):
         labels["instances"] = Instances.concatenate([labels["instances"], labels2["instances"]], axis=0)
         labels["cls"] = np.concatenate([labels["cls"], labels2["cls"]], 0)
         labels["color"] = np.concatenate([labels["color"], labels2["color"]], 0)
+        if "size" in labels and "size" in labels2:
+            labels["size"] = np.concatenate([labels["size"], labels2["size"]], 0)
         # num_cls = int(cls_cat.max()) + 1  # 总数字类别数
         # final_cls = (color_cat * num_cls + torch.from_numpy(cls_cat).reshape(-1, 1)).squeeze(1)
         # labels["cls"] = final_cls
-        # labels["color"] = color_cat 
+        # labels["color"] = color_cat
         return labels
 
 
@@ -1079,6 +1091,9 @@ class CutMix(BaseMixTransform):
         # Sync color with cls if present
         if "color" in labels and "color" in labels2:
             labels["color"] = np.concatenate([labels["color"], labels2["color"][indexes2]], axis=0)
+        # Sync size with cls if present
+        if "size" in labels and "size" in labels2:
+            labels["size"] = np.concatenate([labels["size"], labels2["size"][indexes2]], axis=0)
         labels["instances"] = Instances.concatenate([labels["instances"], instances2], axis=0)
         return labels
 
@@ -1398,6 +1413,9 @@ class RandomPerspective:
         # Sync filter color if present
         if "color" in labels:
             labels["color"] = labels["color"][i]
+        # Sync filter size if present
+        if "size" in labels:
+            labels["size"] = labels["size"][i]
         labels["img"] = img
         labels["resized_shape"] = img.shape[:2]
         return labels
@@ -2064,6 +2082,8 @@ class Albumentations:
                                     break
                         if len(kept_indices) == len(new_cls):
                             labels["color"] = labels["color"][kept_indices]
+                            if "size" in labels:
+                                labels["size"] = labels["size"][kept_indices]
 
                     labels["cls"] = new_cls
                     bboxes = new_bboxes
@@ -2162,6 +2182,17 @@ class Format:
             if hasattr(color, 'ndim') and color.ndim == 2:
                 color = color.flatten()
 
+        # Pop size for later processing
+        size = labels.pop("size", None)
+        if size is not None:
+            if isinstance(size, torch.Tensor):
+                size = size.cpu().numpy() if size.is_cuda else size.numpy()
+            elif isinstance(size, np.ndarray):
+                size = size.copy()
+            # Flatten to 1D if needed
+            if hasattr(size, 'ndim') and size.ndim == 2:
+                size = size.flatten()
+
         instances = labels.pop("instances")
         instances.convert_bbox(format=self.bbox_format)
         instances.denormalize(w, h)
@@ -2212,6 +2243,16 @@ class Format:
             labels["color"] = color
         else:
             labels["color"] = torch.zeros(nl, 1, dtype=torch.int64)
+
+        # Handle size - ensure length matches nl and shape is (nl, 1)
+        if size is not None and len(size) >= nl:
+            size = size[:nl]  # Truncate to match nl
+            size = torch.from_numpy(np.asarray(size, dtype=np.int64))
+            if size.dim() == 1:
+                size = size.unsqueeze(-1)
+            labels["size"] = size
+        else:
+            labels["size"] = torch.zeros(nl, 1, dtype=torch.int64)
         return labels
 
     def _format_img(self, img: np.ndarray) -> torch.Tensor:

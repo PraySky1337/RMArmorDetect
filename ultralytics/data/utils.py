@@ -330,6 +330,7 @@ def verify_image_label(args: tuple) -> list:
     im_file, lb_file, prefix, keypoint, num_cls, nkpt, ndim, single_cls = args
     nm, nf, ne, nc, msg, segments, keypoints = 0, 0, 0, 0, "", [], None
     color = np.zeros((0, 1), dtype=np.int64)
+    size = np.zeros((0, 1), dtype=np.int64)
 
     try:
         # 1. 验证图像（保持不变）
@@ -347,11 +348,13 @@ def verify_image_label(args: tuple) -> list:
                 raw = [x.split() for x in f.read().strip().splitlines() if len(x)]
             if len(raw) > 0:
                 raw = np.array(raw, dtype=np.float32)
+                # 新标签格式: color size cls x1 y1 x2 y2 x3 y3 x4 y4 (11字段)
                 color = raw[:, 0:1].astype(np.int64)  # 颜色类别
-                cls = raw[:, 1:2].astype(np.float32)  # 数字类别
+                size = raw[:, 1:2].astype(np.int64)   # 尺寸类别
+                cls = raw[:, 2:3].astype(np.float32)  # 数字类别
 
-                # 提取多边形点（假设格式：[color_cls, num_cls, x1,y1, x2,y2, x3,y3, x4,y4]）
-                pts = raw[:, 2:].reshape(-1, 4, 2)  # 转换为 [N,4,2]
+                # 提取多边形点（格式：[color, size, cls, x1,y1, x2,y2, x3,y3, x4,y4]）
+                pts = raw[:, 3:].reshape(-1, 4, 2)  # 转换为 [N,4,2]
 
                 # 计算边界框(cxcywh)
                 x0 = pts[..., 0].min(1)
@@ -371,19 +374,21 @@ def verify_image_label(args: tuple) -> list:
                 lb = np.zeros((0, 5), dtype=np.float32)
                 keypoints = np.zeros((0, nkpt, ndim), dtype=np.float32) if keypoint else None
                 color = np.zeros((0, 1), dtype=np.int64)
+                size = np.zeros((0, 1), dtype=np.int64)
         else:
             nm = 1
             lb = np.zeros((0, 5), dtype=np.float32)
             keypoints = np.zeros((0, nkpt, ndim), dtype=np.float32) if keypoint else None
             color = np.zeros((0, 1), dtype=np.int64)
+            size = np.zeros((0, 1), dtype=np.int64)
 
         # 3. 返回结果
-        return im_file, lb, shape, segments, keypoints, color, nm, nf, ne, nc, msg
+        return im_file, lb, shape, segments, keypoints, color, size, nm, nf, ne, nc, msg
 
     except Exception as e:
         nc = 1
         msg = f"{prefix}{im_file}: ignoring corrupt image/label: {e}"
-        return [None, None, None, None, None, np.zeros((0,1), dtype=np.int64), nm, nf, ne, nc, msg]
+        return [None, None, None, None, None, np.zeros((0,1), dtype=np.int64), np.zeros((0,1), dtype=np.int64), nm, nf, ne, nc, msg]
 
 
 def visualize_image_annotations(image_path: str, txt_path: str, label_map: dict[int, str]):

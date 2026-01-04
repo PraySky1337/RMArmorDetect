@@ -121,7 +121,7 @@ class YOLODataset(BaseDataset):
                 ),
             )
             pbar = TQDM(results, desc=desc, total=total)
-            for im_file, lb, shape, segments, keypoint, color, nm_f, nf_f, ne_f, nc_f, msg in pbar:
+            for im_file, lb, shape, segments, keypoint, color, size, nm_f, nf_f, ne_f, nc_f, msg in pbar:
                 nm += nm_f
                 nf += nf_f
                 ne += ne_f
@@ -136,6 +136,7 @@ class YOLODataset(BaseDataset):
                             "segments": segments,
                             "keypoints": keypoint,  # n, 4, 2 - 4个角点
                             "color": color,  # n, 1 - 颜色类别
+                            "size": size,  # n, 1 - 尺寸类别
                             "normalized": True,
                             "bbox_format": "xywh",
                         }
@@ -198,6 +199,17 @@ class YOLODataset(BaseDataset):
                 if color_arr.ndim == 2:
                     color_arr = color_arr.squeeze(-1)  # (n, 1) -> (n,)
                 lb["color"] = color_arr.flatten()  # 确保是一维
+
+            # 处理 size 字段
+            size_arr = lb.get("size", None)
+            if size_arr is None:
+                lb["size"] = np.zeros((len(lb["cls"]),), dtype=np.int64)  # 没有 size -> zero fill
+            else:
+                # 确保 size 是一维数组
+                size_arr = np.asarray(size_arr, dtype=np.int64)
+                if size_arr.ndim == 2:
+                    size_arr = size_arr.squeeze(-1)  # (n, 1) -> (n,)
+                lb["size"] = size_arr.flatten()  # 确保是一维
       
 
         # Check if the dataset is all boxes or all segments
@@ -293,6 +305,20 @@ class YOLODataset(BaseDataset):
         else:
             label["color"] = np.zeros((len(bboxes), 1), dtype=np.int64)
 
+        # Handle size - same as color
+        if "size" in label:
+            size = label["size"]
+            if isinstance(size, np.ndarray):
+                if size.ndim == 1:
+                    size = size.reshape(-1, 1)
+                label["size"] = size[:len(bboxes)]  # 确保长度匹配
+            elif isinstance(size, torch.Tensor):
+                if size.dim() == 1:
+                    size = size.unsqueeze(-1)
+                label["size"] = size[:len(bboxes)]
+        else:
+            label["size"] = np.zeros((len(bboxes), 1), dtype=np.int64)
+
         # NOTE: do NOT resample oriented boxes
         segment_resamples = 100 if self.use_obb else 1000
         if len(segments) > 0:
@@ -326,7 +352,7 @@ class YOLODataset(BaseDataset):
                 value = torch.stack(value, 0)
             elif k == "visuals":
                 value = torch.nn.utils.rnn.pad_sequence(value, batch_first=True)
-            elif k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb", "color"}:
+            elif k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb", "color", "size"}:
                 # Debug: print shapes before cat
                 shapes = [v.shape for v in value]
                 # print(f"DEBUG collate {k}: shapes = {shapes}")
@@ -347,7 +373,7 @@ class YOLODataset(BaseDataset):
                             v = torch.zeros((0, *ref_shape[1:]), dtype=v.dtype)
                         elif k == "bboxes":
                             v = torch.zeros((0, 4), dtype=v.dtype)
-                        elif k in {"cls", "color"}:
+                        elif k in {"cls", "color", "size"}:
                             v = torch.zeros((0, 1), dtype=v.dtype)
                         elif k == "segments" and ref_shape is not None:
                             v = torch.zeros((0, *ref_shape[1:]), dtype=v.dtype)
@@ -357,8 +383,8 @@ class YOLODataset(BaseDataset):
                             v = torch.zeros((0, 5), dtype=v.dtype)
                         elif ref_shape is not None and len(ref_shape) > 1:
                             v = torch.zeros((0, *ref_shape[1:]), dtype=v.dtype)
-                    # Ensure 2D for cls and color
-                    if k in {"cls", "color"} and v.dim() == 1:
+                    # Ensure 2D for cls, color, and size
+                    if k in {"cls", "color", "size"} and v.dim() == 1:
                         v = v.unsqueeze(-1)
                     fixed_value.append(v)
 
@@ -376,7 +402,7 @@ class YOLODataset(BaseDataset):
                         value = torch.zeros((0, 4, 2))
                     elif k == "bboxes":
                         value = torch.zeros((0, 4))
-                    elif k in {"cls", "color"}:
+                    elif k in {"cls", "color", "size"}:
                         value = torch.zeros((0, 1))
                     elif k == "obb":
                         value = torch.zeros((0, 5))

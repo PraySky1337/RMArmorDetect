@@ -1,5 +1,5 @@
 """
-Armor Pose Loss - Loss function for armor detection with dual classification branches.
+Armor Pose Loss - Loss function for armor detection with triple classification branches.
 
 Uses WingLoss for keypoint regression (more sensitive to small errors than OKS).
 """
@@ -16,22 +16,24 @@ from armor_detect.utils import TOP_K_ANCHORS, MAX_DIST_RATIO, FOCAL_GAMMA
 
 
 class ArmorPoseLoss:
-    """Loss function for armor pose detection with dual classification branches.
+    """Loss function for armor pose detection with triple classification branches.
 
     This loss computes:
     - Keypoint regression loss using WingLoss (pose_loss)
     - Keypoint objectness loss (kobj_loss)
     - Number classification loss with Focal Loss (cls_loss)
     - Color classification loss with Focal Loss (color_loss)
+    - Size classification loss with Focal Loss (size_loss)
 
-    Label format: color cls x1 y1 x2 y2 x3 y3 x4 y4
+    Label format: color size cls x1 y1 x2 y2 x3 y3 x4 y4
     where:
-    - color: color class (0-3: R, B, N, P)
-    - cls: number class (0-7: numbers 1-8)
+    - color: color class (0-3: B, R, N, P)
+    - size: size class (0-1: s, b)
+    - cls: number class (0-7: G, 1, 2, 3, 4, 5, O, B)
     - x1-x4, y1-y4: 4 corner keypoints (normalized coordinates)
 
     Args:
-        model: The armor detection model (must have a Pose head with kpt_shape, nc_num, nc_color)
+        model: The armor detection model (must have a Pose head with kpt_shape, nc_num, nc_color, nc_size)
     """
 
     def __init__(self, model):
@@ -51,6 +53,7 @@ class ArmorPoseLoss:
         self.kpt_shape = pose_layer.kpt_shape
         self.nc_num = pose_layer.nc_num
         self.nc_color = pose_layer.nc_color
+        self.nc_size = getattr(pose_layer, 'nc_size', 2)
         self.nc = self.nc_num  # for compatibility
 
         self.device = device
@@ -62,9 +65,10 @@ class ArmorPoseLoss:
         wing_epsilon = getattr(h, 'wing_epsilon', 2.0)
         self.keypoint_loss = WingLoss(omega=wing_omega, epsilon=wing_epsilon)
 
-        # Classification losses for both branches
+        # Classification losses for all branches
         self.bce_num = nn.BCEWithLogitsLoss(reduction="none")
         self.bce_color = nn.BCEWithLogitsLoss(reduction="none")
+        self.bce_size = nn.BCEWithLogitsLoss(reduction="none")
 
         # Focal Loss gamma for hard example mining
         self.focal_gamma = FOCAL_GAMMA
@@ -76,37 +80,39 @@ class ArmorPoseLoss:
     def __call__(
         self, preds: tuple, batch: dict[str, torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Calculate losses for keypoint-only pose detection with dual classification branches.
+        """Calculate losses for keypoint-only pose detection with triple classification branches.
 
         Args:
             preds: Model predictions
-                - Training mode: (feats_list, (cls_num, cls_color, kpt))
-                - Validation mode: (combined_output, (feats_list, (cls_num, cls_color, kpt)))
+                - Training mode: (feats_list, (cls_num, cls_color, cls_size, kpt))
+                - Validation mode: (combined_output, (feats_list, (cls_num, cls_color, cls_size, kpt)))
             batch: Batch data containing:
                 - batch_idx: Batch indices for each GT
                 - cls: Number class labels
                 - keypoints: Ground truth keypoints (normalized)
                 - color: Color class labels
+                - size: Size class labels
 
         Returns:
             tuple: (total_loss * batch_size, loss_components)
-                - loss_components: [pose_loss, kobj_loss, cls_loss, color_loss]
+                - loss_components: [pose_loss, kobj_loss, cls_loss, color_loss, size_loss]
         """
-        loss = torch.zeros(4, device=self.device)
+        loss = torch.zeros(5, device=self.device)
 
         # Unpack predictions
         if isinstance(preds[0], list):
             # Training mode
             feats = preds[0]
-            cls_num_pred, cls_color_pred, kpt_pred = preds[1]
+            cls_num_pred, cls_color_pred, cls_size_pred, kpt_pred = preds[1]
         else:
             # Validation mode
             feats = preds[1][0]
-            cls_num_pred, cls_color_pred, kpt_pred = preds[1][1]
+            cls_num_pred, cls_color_pred, cls_size_pred, kpt_pred = preds[1][1]
 
         # Permute dimensions for per-anchor loss computation
         cls_num_pred = cls_num_pred.permute(0, 2, 1)  # (bs, na, nc_num)
         cls_color_pred = cls_color_pred.permute(0, 2, 1)  # (bs, na, nc_color)
+        cls_size_pred = cls_size_pred.permute(0, 2, 1)  # (bs, na, nc_size)
         kpt_pred = kpt_pred.permute(0, 2, 1)  # (bs, na, nk)
 
         # Get stride dynamically from pose_layer
@@ -271,11 +277,47 @@ class ArmorPoseLoss:
         else:
             loss[3] = (cls_color_pred * 0).sum()
 
+        # Size classification loss with Focal Loss
+        if "size" in batch:
+            gt_size = batch["size"].view(-1)
+            size_targets = torch.zeros_like(cls_size_pred)
+
+            for b in range(batch_size):
+                valid_mask = fg_mask[b]
+                if valid_mask.sum() > 0:
+                    batch_mask = batch_idx_for_cls == b
+                    batch_size_labels = gt_size[batch_mask]
+                    gt_indices = target_gt_idx[b][valid_mask]
+                    valid_anchor_indices = torch.where(valid_mask)[0]
+
+                    for i, gt_idx in enumerate(gt_indices):
+                        gt_idx = int(gt_idx.item())
+                        if 0 <= gt_idx < len(batch_size_labels):
+                            size_id = int(batch_size_labels[gt_idx].item())
+                            if size_id < self.nc_size:
+                                anchor_idx = valid_anchor_indices[i]
+                                size_targets[b, anchor_idx, size_id] = 1.0
+
+            if fg_mask.sum() > 0:
+                fg_size_pred = cls_size_pred[fg_mask]
+                fg_size_target = size_targets[fg_mask]
+                size_loss = self.bce_size(
+                    fg_size_pred, fg_size_target.to(fg_size_pred.dtype)
+                )
+                pt = torch.exp(-size_loss)
+                focal_weight = (1 - pt) ** self.focal_gamma
+                loss[4] = (size_loss * focal_weight).mean()
+            else:
+                loss[4] = (cls_size_pred * 0).sum()
+        else:
+            loss[4] = (cls_size_pred * 0).sum()
+
         # Apply loss weights from hyperparameters
         loss[0] *= self.hyp.pose
         loss[1] *= self.hyp.kobj
         loss[2] *= self.hyp.cls
         loss[3] *= getattr(self.hyp, "color", 1.0)
+        loss[4] *= getattr(self.hyp, "size", 1.0)
 
         return loss * batch_size, loss.detach()
 

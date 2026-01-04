@@ -77,7 +77,6 @@ from ultralytics.utils.loss import (
     v8ClassificationLoss,
     v8DetectionLoss,
     v8OBBLoss,
-    v8PoseLoss,
     v8SegmentationLoss,
 )
 from ultralytics.utils.ops import make_divisible
@@ -587,7 +586,8 @@ class PoseModel(DetectionModel):
 
     def init_criterion(self):
         """Initialize the loss criterion for the PoseModel."""
-        return v8PoseLoss(self)
+        from armor_detect.losses.armor_pose_loss import ArmorPoseLoss
+        return ArmorPoseLoss(self)
 
 
 class ClassificationModel(BaseModel):

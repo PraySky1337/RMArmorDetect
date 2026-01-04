@@ -3,9 +3,10 @@
 # Keypoint-only detection without bounding boxes
 
 # Class configuration
-nc: 12            # Total classes (nc_num * some factor, for compatibility)
-nc_num: 8         # Number classes (1-8 for armor numbers)
+nc: 64            # Total classes (nc_num * nc_color * nc_size = 8 * 4 * 2)
+nc_num: 8         # Number classes (G, 1, 2, 3, 4, 5, O, B)
 nc_color: 4       # Color classes (B, R, N, P)
+nc_size: 2        # Size classes (s=small, b=big)
 kpt_shape: [4, 2] # 4 keypoints, 2D coordinates (x, y)
 
 # WingLoss parameters for keypoint regression
@@ -17,6 +18,7 @@ pose: 12.0        # Keypoint loss weight
 kobj: 1.0         # Keypoint objectness weight
 cls: 0.5          # Number classification weight
 color: 0.5        # Color classification weight
+size: 0.5         # Size classification weight
 
 # Focal Loss parameters
 focal_gamma: 1.5  # Gamma for hard example mining
@@ -65,6 +67,7 @@ head:
   - [[-1, 10], 1, Concat, [1]]       # cat head P5
   - [-1, 1, C3k2, [512, True]]       # 21: P5 (large objects)
 
-  # Detection head: ArmorPoseHead with dual classification
-  # Args: [nc_num, nc_color, kpt_shape]
-  - [[15, 18, 21], 1, Pose, [8, 4, [4, 2]]]
+  # Detection head: ArmorPoseHead with triple classification
+  # Args: [nc_num, nc_color, nc_size, kpt_shape]
+  # nc_num=8: G(0), 1(1), 2(2), 3(3), 4(4), 5(5), O(6), B(7)
+  - [[15, 18, 21], 1, Pose, [8, 4, 2, [4, 2]]]

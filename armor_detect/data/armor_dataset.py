@@ -1,8 +1,8 @@
 """
-Armor Dataset - Dataset class for armor detection with color field support.
+Armor Dataset - Dataset class for armor detection with color and size field support.
 
 This module provides the ArmorDataset class that wraps YOLODataset
-and ensures proper handling of the color classification field.
+and ensures proper handling of the color and size classification fields.
 """
 
 import numpy as np
@@ -13,15 +13,16 @@ from ultralytics.utils import LOGGER
 
 
 class ArmorDataset(YOLODataset):
-    """Dataset class for armor detection with color field support.
+    """Dataset class for armor detection with color and size field support.
 
-    This class extends YOLODataset to handle the dual classification format
-    used in armor detection (number class + color class).
+    This class extends YOLODataset to handle the triple classification format
+    used in armor detection (number class + color class + size class).
 
-    Label format: color cls x1 y1 x2 y2 x3 y3 x4 y4
+    Label format: color size cls x1 y1 x2 y2 x3 y3 x4 y4
     where:
     - color: color class (0-3: B, R, N, P)
-    - cls: number class (0-7: numbers 1-8)
+    - size: size class (0-1: s, b)
+    - cls: number class (0-7: G, 1, 2, 3, 4, 5, O, B)
     - x1-x4, y1-y4: 4 corner keypoints (normalized coordinates)
 
     Args:
@@ -38,33 +39,35 @@ class ArmorDataset(YOLODataset):
         super().__init__(*args, **kwargs)
 
     def cache_labels(self, path: str = "./labels.cache") -> dict:
-        """Cache labels with color field validation.
+        """Cache labels with color and size field validation.
 
         Args:
             path: Path to cache file.
 
         Returns:
-            dict: Cached labels with validated color field.
+            dict: Cached labels with validated color and size fields.
         """
         labels = super().cache_labels(path)
 
-        # Ensure color field exists and is properly formatted
+        # Ensure color and size fields exist and are properly formatted
         for lb in labels:
             self._validate_color_field(lb)
+            self._validate_size_field(lb)
 
         return labels
 
     def get_labels(self) -> list[dict[str, Any]]:
-        """Get labels with color field validation.
+        """Get labels with color and size field validation.
 
         Returns:
-            list: List of label dictionaries with validated color field.
+            list: List of label dictionaries with validated color and size fields.
         """
         labels = super().get_labels()
 
-        # Ensure color field exists and is properly formatted
+        # Ensure color and size fields exist and are properly formatted
         for lb in labels:
             self._validate_color_field(lb)
+            self._validate_size_field(lb)
 
         return labels
 
@@ -87,9 +90,28 @@ class ArmorDataset(YOLODataset):
                 color_arr = color_arr.squeeze(-1)  # (n, 1) -> (n,)
             label["color"] = color_arr.flatten()
 
+    def _validate_size_field(self, label: dict) -> None:
+        """Validate and fix size field in a label dictionary.
+
+        Args:
+            label: Label dictionary to validate.
+        """
+        size_arr = label.get("size", None)
+
+        if size_arr is None:
+            # No size field - create default (zeros)
+            num_objects = len(label.get("cls", []))
+            label["size"] = np.zeros((num_objects,), dtype=np.int64)
+        else:
+            # Ensure size is 1D array of int64
+            size_arr = np.asarray(size_arr, dtype=np.int64)
+            if size_arr.ndim == 2:
+                size_arr = size_arr.squeeze(-1)  # (n, 1) -> (n,)
+            label["size"] = size_arr.flatten()
+
     @staticmethod
     def collate_fn(batch: list[dict]) -> dict:
-        """Collate batch with color field support.
+        """Collate batch with color and size field support.
 
         Args:
             batch: List of sample dictionaries.
@@ -114,6 +136,19 @@ class ArmorDataset(YOLODataset):
 
             if colors:
                 collated["color"] = torch.cat(colors, 0)
+
+        # Handle size field if present
+        if batch and "size" in batch[0]:
+            sizes = []
+            for sample in batch:
+                if "size" in sample:
+                    size = sample["size"]
+                    if isinstance(size, np.ndarray):
+                        size = torch.from_numpy(size)
+                    sizes.append(size)
+
+            if sizes:
+                collated["size"] = torch.cat(sizes, 0)
 
         return collated
 

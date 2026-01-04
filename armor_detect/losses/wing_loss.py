@@ -9,6 +9,8 @@ and a linear function for large errors (more robust to outliers).
 """
 
 import math
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
@@ -103,7 +105,7 @@ class WingLossWithMask(WingLoss):
         self,
         pred: torch.Tensor,
         target: torch.Tensor,
-        mask: torch.Tensor | None = None
+        mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """Compute masked Wing Loss.
 

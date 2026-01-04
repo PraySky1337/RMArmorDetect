@@ -137,9 +137,9 @@ ultralytics = "ultralytics.cfg:entrypoint"
 
 # Tools settings -------------------------------------------------------------------------------------------------------
 [tool.setuptools]  # configuration specific to the `setuptools` build backend.
-packages = { find = { where = ["."], include = ["ultralytics", "ultralytics.*"] } }
+packages = { find = { where = ["."], include = ["ultralytics", "ultralytics.*", "armor_detect", "armor_detect.*"] } }
 # Tests included below for checking Conda builds in https://github.com/conda-forge/ultralytics-feedstock
-package-data = { "ultralytics" = ["**/*.yaml", "**/*.sh", "../tests/*.py"], "ultralytics.assets" = ["*.jpg"], "ultralytics.solutions.templates" = ["*.html"]}
+package-data = { "ultralytics" = ["**/*.yaml", "**/*.sh", "../tests/*.py"], "ultralytics.assets" = ["*.jpg"], "ultralytics.solutions.templates" = ["*.html"], "armor_detect" = ["**/*.yaml"]}
 
 [tool.setuptools.dynamic]
 version = { attr = "ultralytics.__version__" }
