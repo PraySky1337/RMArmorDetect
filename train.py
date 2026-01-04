@@ -50,14 +50,18 @@ def load_train_cfg(path: Path = TRAIN_CFG) -> dict:
     return cfg
 
 
-def infer_dataset_info(labels_dir: Path) -> tuple[set[int], tuple[int, int], set[int]]:
-    """Infer classes, keypoints shape, and color classes from label files."""
+def infer_dataset_info(labels_dir: Path) -> tuple[set[int], tuple[int, int], set[int], set[int]]:
+    """Infer classes, keypoints shape, color classes, and size classes from label files.
+
+    Label format: color size cls x1 y1 x2 y2 x3 y3 x4 y4
+    """
     label_files = sorted(labels_dir.glob("*.txt"))
     if not label_files:
         raise FileNotFoundError(f"No label files found under {labels_dir}")
 
     classes_present: set[int] = set()
     colors_present: set[int] = set()
+    sizes_present: set[int] = set()
     num_kpts, ndim = None, None
 
     for lf in label_files:
@@ -65,12 +69,14 @@ def infer_dataset_info(labels_dir: Path) -> tuple[set[int], tuple[int, int], set
             parts = line.strip().split()
             if not parts:
                 continue
-            color = int(float(parts[0]))
-            cls = int(float(parts[1]))
+            color = int(float(parts[0]))  # Column 0: color
+            size = int(float(parts[1]))   # Column 1: size
+            cls = int(float(parts[2]))    # Column 2: cls (armor number)
             classes_present.add(cls)
             colors_present.add(color)
+            sizes_present.add(size)
 
-            coords = len(parts) - 2
+            coords = len(parts) - 3  # Subtract color, size, cls
             if coords <= 0:
                 continue
             if ndim is None:
@@ -84,11 +90,11 @@ def infer_dataset_info(labels_dir: Path) -> tuple[set[int], tuple[int, int], set
             else:
                 if coords % ndim != 0:
                     raise ValueError(f"Inconsistent keypoint dims in {lf}: {coords} coords")
-                kpts_here = coords // ndim
+                kpts_here= coords // ndim
                 if kpts_here != num_kpts:
                     raise ValueError(f"Inconsistent keypoint count in {lf}: {kpts_here} vs {num_kpts}")
 
-    return classes_present, (num_kpts, ndim), colors_present
+    return classes_present, (num_kpts, ndim), colors_present, sizes_present
 
 
 def make_splits(img_dir: Path, train_ratio: float = 0.9, seed: int = 0) -> tuple[Path, Path]:
@@ -142,7 +148,7 @@ def main() -> None:
     run_name = f"{base_name}_{timestamp}"
 
     # Infer dataset info from labels
-    classes_present, kpt_shape, colors_present = infer_dataset_info(LBL_DIR)
+    classes_present, kpt_shape, colors_present, sizes_present = infer_dataset_info(LBL_DIR)
     missing = [i for i in range(len(CLASS_NAMES)) if i not in classes_present]
     if missing:
         print(f"Note: {len(missing)} classes not present in labels: {missing[:10]}{'...' if len(missing) > 10 else ''}")
