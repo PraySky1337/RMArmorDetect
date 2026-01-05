@@ -2,8 +2,8 @@
 
 # Constants
 INITIAL_CONF = 0.01
-TOP_K_ANCHORS = 5
-MAX_DIST_RATIO = 1.2
+TOP_K_ANCHORS = 13       # 增加正样本数量，更多anchor参与学习
+MAX_DIST_RATIO = 2.5     # 放宽距离阈值，允许更多正样本
 FOCAL_GAMMA = 1.5
 
 # Class names - 与数据集标签保持一致

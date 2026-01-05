@@ -16,10 +16,10 @@ seed: 0
 
 # ================= 优化器 & 学习率 =================
 optimizer: "AdamW"
-lr0: 0.00025
-lrf: 0.01
+lr0: 0.001        # 提高初始学习率
+lrf: 0.1          # 提高最终学习率比例，最终lr=0.0001
 momentum: 0.937
-weight_decay: 0.0008
+weight_decay: 0.0005  # 降低weight decay
 
 warmup_epochs: 5
 warmup_momentum: 0.8
@@ -45,7 +45,7 @@ mixup: 0.1
 copy_paste: 0.0
 erasing: 0.5
 
-close_mosaic: 50
+close_mosaic: 150   # 延迟关闭mosaic到150轮
 
 # ================= 训练流程控制 =================
 patience: 50
