@@ -100,8 +100,10 @@ class ArmorTrainer(yolo.detect.DetectionTrainer):
         Returns:
             ArmorValidator instance configured for armor detection.
         """
+        from armor_detect.validators.armor_validator import ArmorValidator
+
         self.loss_names = ("pose_loss", "kobj_loss", "cls_loss", "color_loss", "size_loss")
-        return yolo.pose.PoseValidator(
+        return ArmorValidator(
             self.test_loader,
             save_dir=self.save_dir,
             args=copy(self.args),

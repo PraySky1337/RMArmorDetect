@@ -13,32 +13,18 @@ from typing import Any
 import numpy as np
 import torch
 
-from ultralytics.models.yolo.detect import DetectionValidator
-from ultralytics.utils import LOGGER, ops
-from ultralytics.utils.metrics import OKS_SIGMA, PoseMetrics, kpt_iou
+from ultralytics.models.yolo.pose.val import PoseValidator
+from ultralytics.utils import LOGGER
+from ultralytics.utils.metrics import kpt_iou
 
 from armor_detect.utils import CLASS_NAMES, COLOR_NAMES, SIZE_NAMES
 
 
-class ArmorValidator(DetectionValidator):
+class ArmorValidator(PoseValidator):
     """Validator for armor detection with triple classification branches.
 
-    This validator handles pose estimation without bounding boxes, using keypoints
-    for both localization and IoU computation. It supports triple classification
-    branches for number (G, 1-5, O, B), color (B, R, N, P), and size (s, b) prediction.
-
-    Attributes:
-        sigma (np.ndarray): Sigma values for OKS calculation.
-        kpt_shape (list[int]): Shape of keypoints [nkpt, ndim].
-        nc_num (int): Number of number classes.
-        nc_color (int): Number of color classes.
-        nc_size (int): Number of size classes.
-        color_names (list[str]): Names of color classes.
-        size_names (list[str]): Names of size classes.
-        color_correct (int): Count of correct color predictions.
-        color_total (int): Total color predictions.
-        size_correct (int): Count of correct size predictions.
-        size_total (int): Total size predictions.
+    Extends PoseValidator to add size classification support.
+    Handles triple classification branches: number, color, and size.
     """
 
     def __init__(
@@ -48,109 +34,37 @@ class ArmorValidator(DetectionValidator):
         args=None,
         _callbacks=None,
     ) -> None:
-        """Initialize ArmorValidator for keypoint-only pose estimation.
-
-        Args:
-            dataloader: Dataloader for validation data.
-            save_dir: Directory to save validation results.
-            args: Configuration arguments.
-            _callbacks: Callback functions.
-        """
+        """Initialize ArmorValidator."""
         super().__init__(dataloader, save_dir, args, _callbacks)
-        self.sigma = None
-        self.kpt_shape = None
-        self.nc_num = 8
-        self.nc_color = 4
         self.nc_size = 2
-        self.color_names = COLOR_NAMES
         self.size_names = SIZE_NAMES
-        self.args.task = "pose"
-        self.metrics = PoseMetrics()
-
-        # Color classification statistics
-        self.color_correct = 0
-        self.color_total = 0
-
-        # Size classification statistics
         self.size_correct = 0
         self.size_total = 0
 
     def preprocess(self, batch: dict[str, Any]) -> dict[str, Any]:
-        """Preprocess batch by converting keypoints, color, and size data to float.
-
-        Args:
-            batch: Input batch dictionary.
-
-        Returns:
-            Preprocessed batch dictionary.
-        """
+        """Preprocess batch including size data."""
         batch = super().preprocess(batch)
-        batch["keypoints"] = batch["keypoints"].float()
-        if "color" in batch:
-            batch["color"] = batch["color"].to(self.device)
         if "size" in batch:
             batch["size"] = batch["size"].to(self.device)
         return batch
 
-    def get_desc(self) -> str:
-        """Return description of evaluation metrics.
-
-        Returns:
-            Formatted string with metric column headers.
-        """
-        return ("%22s" + "%11s" * 6) % (
-            "Class",
-            "Images",
-            "Instances",
-            "P",
-            "R",
-            "mAP50",
-            "mAP50-95",
-        )
-
     def init_metrics(self, model: torch.nn.Module) -> None:
-        """Initialize evaluation metrics for pose validation.
-
-        Args:
-            model: The model being validated.
-        """
+        """Initialize metrics including size classification."""
         super().init_metrics(model)
-        self.kpt_shape = self.data["kpt_shape"]
-        is_pose = self.kpt_shape == [17, 3]
-        nkpt = self.kpt_shape[0]
-        self.sigma = OKS_SIGMA if is_pose else np.ones(nkpt) / nkpt
 
-        # Get nc_num and nc_size from model head
+        # Get nc_size from model head
         pose_head = self._find_pose_head(model)
         if pose_head:
-            self.nc_num = pose_head.nc_num
             self.nc_size = getattr(pose_head, 'nc_size', 2)
         else:
-            self.nc_num = self.data.get("nc", 8)
             self.nc_size = self.data.get("nc_size", 2)
 
-        self.nc_color = len(self.data.get("color_names", COLOR_NAMES))
-        self.color_names = self.data.get("color_names", COLOR_NAMES)
         self.size_names = self.data.get("size_names", SIZE_NAMES)
-        self.color_correct = 0
-        self.color_total = 0
         self.size_correct = 0
         self.size_total = 0
 
-        # Override names from data config
-        if "names" in self.data:
-            self.names = self.data["names"]
-            self.nc = len(self.names)
-
     def _find_pose_head(self, model: torch.nn.Module):
-        """Find the pose head in the model.
-
-        Args:
-            model: The model to search.
-
-        Returns:
-            The pose head layer if found, None otherwise.
-        """
+        """Find the pose head in the model."""
         inner_model = model.model if hasattr(model, "model") else model
         model_layers = inner_model.model if hasattr(inner_model, "model") else inner_model
 
@@ -160,13 +74,9 @@ class ArmorValidator(DetectionValidator):
         return None
 
     def postprocess(self, preds: torch.Tensor) -> list[dict[str, torch.Tensor]]:
-        """Postprocess predictions to extract keypoints and classifications.
+        """Postprocess predictions with triple classification branches.
 
-        Args:
-            preds: Model predictions tensor.
-
-        Returns:
-            List of dictionaries containing processed predictions.
+        Overrides parent to handle size branch in addition to num and color.
         """
         # Handle validation mode output format
         if isinstance(preds, (tuple, list)):
@@ -183,7 +93,7 @@ class ArmorValidator(DetectionValidator):
         for b_idx in range(bs):
             pred_data = preds[b_idx]
 
-            # Split predictions
+            # Split predictions: num + color + size + keypoints
             num_scores = pred_data[:nc_num]
             color_scores = pred_data[nc_num : nc_num + nc_color]
             size_scores = pred_data[nc_num + nc_color : nc_num + nc_color + nc_size]
@@ -200,7 +110,13 @@ class ArmorValidator(DetectionValidator):
             valid_mask = num_conf > conf_thres
 
             if valid_mask.sum() == 0:
-                results.append(self._empty_result(preds.device, nkpt, ndim))
+                results.append({
+                    "cls": torch.zeros((0,), dtype=torch.long, device=preds.device),
+                    "conf": torch.zeros((0,), device=preds.device),
+                    "keypoints": torch.zeros((0, nkpt, ndim), device=preds.device),
+                    "color_cls": torch.zeros((0,), dtype=torch.long, device=preds.device),
+                    "size_cls": torch.zeros((0,), dtype=torch.long, device=preds.device),
+                })
                 continue
 
             # Extract valid predictions
@@ -211,7 +127,8 @@ class ArmorValidator(DetectionValidator):
             valid_kpts = kpt_data[:, valid_mask].t().view(-1, nkpt, ndim)
 
             # Apply keypoint NMS
-            keep = self._kpt_nms(valid_kpts, valid_conf, iou_thres=0.5)
+            iou_thres = getattr(self.args, 'iou', 0.5)
+            keep = self._kpt_nms(valid_kpts, valid_conf, iou_thres=iou_thres)
 
             if len(keep) > max_dets:
                 keep = keep[:max_dets]
@@ -226,128 +143,61 @@ class ArmorValidator(DetectionValidator):
 
         return results
 
-    def _empty_result(
-        self, device: torch.device, nkpt: int, ndim: int
-    ) -> dict[str, torch.Tensor]:
-        """Create empty result dictionary.
+    def _prepare_batch(self, si: int, batch: dict[str, Any]) -> dict[str, Any]:
+        """Prepare batch with size data."""
+        pbatch = super()._prepare_batch(si, batch)
 
-        Args:
-            device: Torch device.
-            nkpt: Number of keypoints.
-            ndim: Number of dimensions per keypoint.
+        # Add size data
+        idx = batch["batch_idx"] == si
+        if "size" in batch:
+            pbatch["size"] = batch["size"][idx]
+        else:
+            pbatch["size"] = torch.zeros((idx.sum(),), dtype=torch.long, device=self.device)
 
-        Returns:
-            Dictionary with empty tensors.
-        """
-        return {
-            "cls": torch.zeros((0,), dtype=torch.long, device=device),
-            "conf": torch.zeros((0,), device=device),
-            "keypoints": torch.zeros((0, nkpt, ndim), device=device),
-            "color_cls": torch.zeros((0,), dtype=torch.long, device=device),
-            "size_cls": torch.zeros((0,), dtype=torch.long, device=device),
-        }
+        return pbatch
 
-    def _kpt_nms(
-        self,
-        keypoints: torch.Tensor,
-        scores: torch.Tensor,
-        iou_thres: float = 0.5,
-    ) -> torch.Tensor:
-        """Apply NMS based on keypoint IoU.
+    def _process_batch(self, preds: dict[str, torch.Tensor], batch: dict[str, Any]) -> dict[str, np.ndarray]:
+        """Process batch with size classification accuracy."""
+        # Call parent for standard keypoint metrics
+        stats = super()._process_batch(preds, batch)
 
-        Args:
-            keypoints: Keypoint predictions (N, nkpt, ndim).
-            scores: Confidence scores (N,).
-            iou_thres: IoU threshold for NMS.
+        gt_cls = batch["cls"]
 
-        Returns:
-            Indices of kept predictions.
-        """
-        if len(keypoints) == 0:
-            return torch.tensor([], dtype=torch.long, device=keypoints.device)
+        # Size classification accuracy
+        if gt_cls.shape[0] > 0 and preds["cls"].shape[0] > 0 and "size" in batch and "size_cls" in preds:
+            gt_size = batch["size"]
+            pred_size = preds["size_cls"]
 
-        # Sort by confidence
-        order = scores.argsort(descending=True)
-        keep = []
+            # Match using keypoint IoU
+            gt_kpts = batch["keypoints"]
+            x_coords = gt_kpts[..., 0]
+            y_coords = gt_kpts[..., 1]
+            area = (x_coords.max(dim=1)[0] - x_coords.min(dim=1)[0]) * \
+                   (y_coords.max(dim=1)[0] - y_coords.min(dim=1)[0])
+            iou_kpt = kpt_iou(batch["keypoints"], preds["keypoints"], sigma=self.sigma, area=area)
 
-        while len(order) > 0:
-            i = order[0].item()
-            keep.append(i)
+            # For each prediction, find best matching GT
+            for pi in range(len(preds["cls"])):
+                if iou_kpt.shape[0] > 0:
+                    iou_col = iou_kpt[:, pi] if iou_kpt.dim() == 2 else iou_kpt
+                    best_iou = iou_col.max()
 
-            if len(order) == 1:
-                break
-
-            # Compute keypoint IoU with remaining
-            remaining = order[1:]
-            kpts_i = keypoints[i : i + 1]
-            kpts_rest = keypoints[remaining]
-
-            ious = kpt_iou(kpts_i, kpts_rest, self.sigma)
-
-            # Keep predictions with IoU below threshold
-            mask = ious.squeeze(0) < iou_thres
-            order = remaining[mask]
-
-        return torch.tensor(keep, dtype=torch.long, device=keypoints.device)
-
-    def update_metrics(
-        self,
-        preds: list[dict[str, torch.Tensor]],
-        batch: dict[str, Any],
-    ) -> None:
-        """Update metrics with batch predictions.
-
-        Args:
-            preds: Processed predictions.
-            batch: Ground truth batch data.
-        """
-        for si, pred in enumerate(preds):
-            # Get ground truth for this sample
-            idx = batch["batch_idx"] == si
-            cls = batch["cls"][idx].squeeze(-1).int()
-            kpts = batch["keypoints"][idx]
-
-            # Update color accuracy if available
-            if "color" in batch and "color_cls" in pred:
-                gt_color = batch["color"][idx]
-                pred_color = pred["color_cls"]
-
-                if len(pred_color) > 0 and len(gt_color) > 0:
-                    # Simple accuracy: check if any prediction matches
-                    self.color_total += len(gt_color)
-                    for pc in pred_color:
-                        if pc in gt_color:
-                            self.color_correct += 1
-
-            # Update size accuracy if available
-            if "size" in batch and "size_cls" in pred:
-                gt_size = batch["size"][idx]
-                pred_size = pred["size_cls"]
-
-                if len(pred_size) > 0 and len(gt_size) > 0:
-                    # Simple accuracy: check if any prediction matches
-                    self.size_total += len(gt_size)
-                    for ps in pred_size:
-                        if ps in gt_size:
+                    if best_iou > 0.5:
+                        best_gt_idx = iou_col.argmax()
+                        self.size_total += 1
+                        gt_size_val = gt_size[best_gt_idx]
+                        if gt_size_val.dim() > 0:
+                            gt_size_val = gt_size_val.squeeze()
+                        if pred_size[pi] == gt_size_val:
                             self.size_correct += 1
 
-            # Call parent update_metrics for standard metrics
-            super().update_metrics(preds, batch)
+        return stats
 
     def finalize_metrics(self) -> None:
-        """Finalize and log metrics after validation."""
+        """Finalize and log metrics including size accuracy."""
         super().finalize_metrics()
-
-        # Log color accuracy
-        if self.color_total > 0:
-            color_acc = self.color_correct / self.color_total * 100
-            LOGGER.info(f"Color accuracy: {color_acc:.2f}%")
 
         # Log size accuracy
         if self.size_total > 0:
             size_acc = self.size_correct / self.size_total * 100
             LOGGER.info(f"Size accuracy: {size_acc:.2f}%")
-
-
-# Alias for backward compatibility
-PoseValidator = ArmorValidator

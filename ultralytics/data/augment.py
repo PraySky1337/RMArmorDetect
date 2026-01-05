@@ -860,23 +860,28 @@ class Mosaic(BaseMixTransform):
         imgsz = self.imgsz * 2  # mosaic imgsz
 
         for labels in mosaic_labels:
-            # 转换color为Tensor（如果还不是）
-            color = labels["color"]
-            if isinstance(color, np.ndarray):
-                color = torch.from_numpy(color)
-            colors.append(color)
-
-            # 转换size为Tensor（如果还不是）
-            size = labels.get("size", np.zeros_like(labels["cls"], dtype=np.int64))
-            if isinstance(size, np.ndarray):
-                size = torch.from_numpy(size)
-            sizes.append(size)
-
             # 转换cls为numpy数组（如果还不是）
             cls = labels["cls"]
             if isinstance(cls, torch.Tensor):
                 cls = cls.cpu().numpy()
+            n = len(cls)  # 当前标签数量
             cls_list.append(cls)
+
+            # 转换color为Tensor（如果还不是）
+            color = labels.get("color")
+            if color is None:
+                color = np.zeros((n, 1), dtype=np.int64)
+            if isinstance(color, np.ndarray):
+                color = torch.from_numpy(color.copy())
+            colors.append(color)
+
+            # 转换size为Tensor（如果还不是）
+            size = labels.get("size")
+            if size is None:
+                size = np.zeros((n, 1), dtype=np.int64)
+            if isinstance(size, np.ndarray):
+                size = torch.from_numpy(size.copy())
+            sizes.append(size)
 
             instances.append(labels["instances"])
 
