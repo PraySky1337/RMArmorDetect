@@ -34,6 +34,8 @@ class PoseValidator(DetectionValidator):
         self.kpt_shape = None
         self.nc_color = 4
         self.color_names = ["B", "R", "N", "P"]
+        self.nc_size = 2
+        self.size_names = ["s", "b"]
         self.args.task = "pose"
         self.metrics = PoseMetrics()
         # Color classification stats
@@ -93,6 +95,9 @@ class PoseValidator(DetectionValidator):
         self.color_correct = 0
         self.color_total = 0
 
+        self.nc_size = len(self.data.get("size_names", ["s", "b"]))
+        self.size_names = self.data.get("size_names", ["s", "b"])
+
         # Override names from data config (not model) to use correct armor class names
         if "names" in self.data:
             self.names = self.data["names"]
@@ -102,8 +107,8 @@ class PoseValidator(DetectionValidator):
     def postprocess(self, preds: torch.Tensor) -> list[dict[str, torch.Tensor]]:
         """Postprocess predictions to extract keypoints and classifications.
 
-        The model outputs: (combined, (feats, (cls_num, cls_color, kpt)))
-        where combined = (bs, nc_num + nc_color + nk, na) with sigmoid'd class scores
+        The model outputs: (combined, (feats, (cls_num, cls_color, cls_size, kpt)))
+        where combined = (bs, nc_num + nc_color + nc_size + nk, na) with sigmoid'd class scores
         and decoded keypoints.
         """
         # Handle validation mode output format
@@ -113,29 +118,32 @@ class PoseValidator(DetectionValidator):
         bs, channels, na = preds.shape
         nc_num = self.nc_num  # Use nc_num (number of number classes), not self.nc (total classes)
         nc_color = self.nc_color
+        nc_size = self.nc_size
         nkpt, ndim = self.kpt_shape
         nk = nkpt * ndim
 
         results = []
         for b_idx in range(bs):
 
-           
+
             # print(f"    num_conf max={num_conf.max().item():.3f}, color_indices={color_indices.tolist()}", flush=True)
-            pred_data = preds[b_idx]  # (nc_num + nc_color + nk, na)
+            pred_data = preds[b_idx]  # (nc_num + nc_color + nc_size + nk, na)
 
             # 分离预测
             num_scores = pred_data[:nc_num]  # 数字类别概率
             color_scores = pred_data[nc_num:nc_num + nc_color]  # (nc_color, na)
-            kpt_data = pred_data[nc_num + nc_color:]  # (nk, na) - decoded keypoints
+            size_scores = pred_data[nc_num + nc_color:nc_num + nc_color + nc_size]  # (nc_size, na)
+            kpt_data = pred_data[nc_num + nc_color + nc_size:]  # (nk, na) - decoded keypoints
 
             # print(f"[DEBUG postprocess] sample {b_idx}: num_scores shape={num_scores.shape}, "f"color_scores shape={color_scores.shape}, kpt_data shape={kpt_data.shape}", flush=True)
             # Get confidence from number classification
             num_conf, cls_indices = num_scores.max(dim=0)  # (na,)
             color_indices = color_scores.argmax(dim=0)  # (na,)
+            size_indices = size_scores.argmax(dim=0)  # (na,)
             # print(f"num_conf: min={num_conf.min():.6f}, max={num_conf.max():.6f}, mean={num_conf.mean():.6f}")
 
             #决定哪些进入 NMS,影响最终输出
-            conf_thres = 0.4
+            conf_thres = 0.5
             max_dets = 50 # 最大检测数print(f"num_conf: min={num_conf.min():.6f}, max={num_conf.max():.6f}, mean={num_conf.mean():.6f}")
 
             # 按置信度过滤
@@ -148,16 +156,18 @@ class PoseValidator(DetectionValidator):
                     "conf": torch.zeros((0,), device=preds.device),
                     "keypoints": torch.zeros((0, nkpt, ndim), device=preds.device),
                     "color_cls": torch.zeros((0,), dtype=torch.long, device=preds.device),
+                    "size_cls": torch.zeros((0,), dtype=torch.long, device=preds.device),
                 })
                 continue
 
-            
+
             # Get valid predictions
             valid_conf = num_conf[valid_mask]
             valid_cls = cls_indices[valid_mask]
             valid_color = color_indices[valid_mask]
+            valid_size = size_indices[valid_mask]
             valid_kpts = kpt_data[:, valid_mask]  # (nk, num_valid)
-            
+
             # Reshape keypoints to (num_valid, nkpt, ndim)
             num_valid = valid_kpts.shape[1]
             kpts = valid_kpts.view(nkpt, ndim, num_valid).permute(2, 0, 1)  # (num_valid, nkpt, ndim)
@@ -165,7 +175,7 @@ class PoseValidator(DetectionValidator):
             # 按置信度排序，跳过 NMS（mAP 计算会处理重复检测）
             # sorted_indices = valid_conf.argsort(descending=True)[:max_dets]
 
-            iou_thres = getattr(self.args, 'iou', 0.1)
+            iou_thres = getattr(self.args, 'iou', 0.5)
             nms_keep = self._kpt_nms(kpts, valid_conf, iou_thres=iou_thres)
             sorted_indices = valid_conf[nms_keep].argsort(descending=True)[:max_dets]
             final_indices = nms_keep[sorted_indices]
@@ -175,6 +185,7 @@ class PoseValidator(DetectionValidator):
                 "conf": valid_conf[final_indices],
                 "keypoints": kpts[final_indices],
                 "color_cls": valid_color[final_indices],
+                "size_cls": valid_size[final_indices],
             })
 
         return results
@@ -472,6 +483,7 @@ class PoseValidator(DetectionValidator):
             fname=self.save_dir / f"val_batch{ni}_labels.jpg",
             names=self.names,
             color_names=self.color_names,
+            size_names=self.size_names,
             on_plot=self.on_plot,
         )
     #可视化模型预测
@@ -509,6 +521,10 @@ class PoseValidator(DetectionValidator):
         if "color_cls" in batched_preds:
             batched_preds["color"] = batched_preds["color_cls"]
 
+        # Map size_cls to size for plotting
+        if "size_cls" in batched_preds:
+            batched_preds["size"] = batched_preds["size_cls"]
+
         plot_images(
             images=batch["img"],
             labels=batched_preds,
@@ -516,8 +532,9 @@ class PoseValidator(DetectionValidator):
             fname=self.save_dir / f"val_batch{ni}_pred.jpg",
             names=self.names,
             color_names=self.color_names,
+            size_names=self.size_names,
             on_plot=self.on_plot,
-            conf_thres=0.35,  #决定在图上画哪些框
+            conf_thres=0.5,  #决定在图上画哪些框
         )
     #将关键点预测从网络输入尺寸缩放回原图尺寸
     # def scale_preds(self, predn: dict[str, torch.Tensor], pbatch: dict[str, Any]) -> dict[str, torch.Tensor]:

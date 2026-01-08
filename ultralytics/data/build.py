@@ -313,7 +313,7 @@ def build_dataloader(
     """
     batch = min(batch, len(dataset))
     nd = torch.cuda.device_count()  # number of CUDA devices
-    nw = min(os.cpu_count() // max(nd, 1), workers)  # number of workers
+    nw = min(os.cpu_count(), workers)  # number of workers
     sampler = (
         None
         if rank == -1
@@ -330,6 +330,7 @@ def build_dataloader(
         num_workers=nw,
         sampler=sampler,
         prefetch_factor=4 if nw > 0 else None,  # increase over default 2
+        persistent_workers=nw > 0,  # keep workers alive between batches
         pin_memory=nd > 0 and pin_memory,
         collate_fn=getattr(dataset, "collate_fn", None),
         worker_init_fn=seed_worker,

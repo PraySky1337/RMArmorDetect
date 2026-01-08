@@ -132,13 +132,22 @@ class BaseDataset(Dataset):
         self.ims, self.im_hw0, self.im_hw = [None] * self.ni, [None] * self.ni, [None] * self.ni
         self.npy_files = [Path(f).with_suffix(".npy") for f in self.im_files]
         self.cache = cache.lower() if isinstance(cache, str) else "ram" if cache is True else None
+
+        # [DIAGNOSTIC] Print cache configuration
+        LOGGER.info(f"{self.prefix}Cache mode: {self.cache} (input: {cache})")
+
         if self.cache == "ram" and self.check_cache_ram():
+            LOGGER.info(f"{self.prefix}✅ RAM cache check passed, starting to cache {self.ni} images...")
             if hyp.deterministic:
                 LOGGER.warning(
                     "cache='ram' may produce non-deterministic training results. "
                     "Consider cache='disk' as a deterministic alternative if your disk space allows."
                 )
             self.cache_images()
+            cached_count = sum(1 for im in self.ims if im is not None)
+            LOGGER.info(f"{self.prefix}✅ Cached {cached_count}/{self.ni} images to RAM")
+        elif self.cache == "ram":
+            LOGGER.warning(f"{self.prefix}❌ RAM cache requested but check_cache_ram() failed")
         elif self.cache == "disk" and self.check_cache_disk():
             self.cache_images()
 
@@ -338,6 +347,13 @@ class BaseDataset(Dataset):
             b += im.nbytes * ratio**2
         mem_required = b * self.ni / n * (1 + safety_margin)  # GB required to cache dataset into RAM
         mem = __import__("psutil").virtual_memory()
+
+        # [DIAGNOSTIC] Print memory check details
+        LOGGER.info(
+            f"{self.prefix}RAM check: need {mem_required / gb:.1f}GB, "
+            f"available {mem.available / gb:.1f}GB / {mem.total / gb:.1f}GB total"
+        )
+
         if mem_required > mem.available:
             self.cache = None
             LOGGER.warning(

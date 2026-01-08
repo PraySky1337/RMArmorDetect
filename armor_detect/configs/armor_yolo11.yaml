@@ -1,6 +1,9 @@
 # Armor Detection Model Configuration
 # Based on YOLO11-pose with dual classification branches (number + color)
-# Keypoint-only detection without bounding boxes 
+# Keypoint-only detection without bounding boxes
+
+# Model scale: n(nano), s(small), m(medium), l(large), x(xlarge)
+scale: 's'
 
 # Class configuration
 nc: 64            # Total classes (nc_num * nc_color * nc_size = 8 * 4 * 2)
@@ -11,15 +14,16 @@ kpt_shape: [4, 2] # 4 keypoints, 2D coordinates (x, y)
 
 # WingLoss parameters for keypoint regression
 # omega应该与图像尺寸成比例，imgsz=416时建议50-100
-wing_omega: 50.0  # 提高分界点，让更多误差在对数区域（更敏感）
+wing_omega: 30.0  # 降低分界点，让训练更稳定
 wing_epsilon: 2.0 # Smoothing parameter for logarithmic part
 
 # Loss weights - 平衡各个分支
-pose: 8.0         # 降低keypoint loss权重
+# 注意：分类损失现在对所有anchor计算（包括背景），权重需要降低
+pose: 5.0         # keypoint loss权重
 kobj: 1.0         # Keypoint objectness weight
-cls: 1.0          # 提高分类loss权重
-color: 1.0        # 提高颜色分类权重
-size: 1.0         # 提高尺寸分类权重
+cls: 1.0          # 数字分类loss权重（降低，因为负样本也参与）
+color: 0.75       # 颜色分类权重（降低）
+size: 0.75        # 尺寸分类权重（降低）
 
 # Focal Loss parameters
 focal_gamma: 1.5  # Gamma for hard example mining

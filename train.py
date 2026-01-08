@@ -19,7 +19,7 @@ SETTINGS.update({
 
 ROOT = Path(__file__).resolve().parent
 IMG_DIR = ROOT / "datasets" / "images"
-LBL_DIR = ROOT / "datasets" / "labels"
+LBL_DIR = ROOT / "datasets" / "label"
 SPLIT_DIR = ROOT / "datasets" / "splits"
 DATA_YAML = ROOT / "datasets" / "rmarmor-pose.yaml"
 TRAIN_CFG = ROOT / "train_config.yaml"
@@ -122,7 +122,7 @@ def make_splits(img_dir: Path, train_ratio: float = 0.9, seed: int = 0) -> tuple
 
 
 def write_data_yaml(names: dict[int, str], kpt_shape: tuple[int, int], train_txt: Path, val_txt: Path) -> Path:
-    """Write pose + color data.yaml."""
+    """Write pose + color + size data.yaml."""
     data = {
         "path": str(ROOT),
         "train": str(train_txt),
@@ -130,6 +130,7 @@ def write_data_yaml(names: dict[int, str], kpt_shape: tuple[int, int], train_txt
         "kpt_shape": list(kpt_shape),
         "names": {int(k): v for k, v in names.items()},
         "color_names": COLOR_NAMES,
+        "size_names": SIZE_NAMES,
     }
     DATA_YAML.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     return DATA_YAML
@@ -148,7 +149,7 @@ def main() -> None:
     run_name = f"{base_name}_{timestamp}"
 
     # Infer dataset info from labels
-    classes_present, kpt_shape, colors_present, sizes_present = infer_dataset_info(LBL_DIR)
+    classes_present, kpt_shape, _colors_present, _sizes_present = infer_dataset_info(LBL_DIR)
     missing = [i for i in range(len(CLASS_NAMES)) if i not in classes_present]
     if missing:
         print(f"Note: {len(missing)} classes not present in labels: {missing[:10]}{'...' if len(missing) > 10 else ''}")

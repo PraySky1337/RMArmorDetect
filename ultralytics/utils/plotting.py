@@ -685,6 +685,7 @@ def plot_images(
     fname: str = "images.jpg",
     names: dict[int, str] | None = None,
     color_names: list[str] | None = None,
+    size_names: list[str] | None = None,
     on_plot: Callable | None = None,
     max_size: int = 1920,
     max_subplots: int = 16,
@@ -695,12 +696,13 @@ def plot_images(
 
     Args:
         labels (dict[str, Any]): Dictionary containing detection data with keys like 'cls', 'bboxes', 'conf', 'masks',
-            'keypoints', 'batch_idx', 'img', 'color'.
+            'keypoints', 'batch_idx', 'img', 'color', 'size'.
         images (torch.Tensor | np.ndarray]): Batch of images to plot. Shape: (batch_size, channels, height, width).
         paths (Optional[list[str]]): List of file paths for each image in the batch.
         fname (str): Output filename for the plotted image grid.
         names (Optional[dict[int, str]]): Dictionary mapping class indices to class names.
         color_names (Optional[list[str]]): List of color names (e.g., ['B', 'R', 'N', 'P']).
+        size_names (Optional[list[str]]): List of size names (e.g., ['s', 'b']).
         on_plot (Optional[Callable]): Optional callback function to be called after saving the plot.
         max_size (int): Maximum size of the output image grid.
         max_subplots (int): Maximum number of subplots in the image grid.
@@ -720,7 +722,7 @@ def plot_images(
         - 3 channels: Used as-is (standard RGB)
         - 4+ channels: Cropped to first 3 channels
     """
-    for k in {"cls", "bboxes", "conf", "masks", "keypoints", "batch_idx", "images", "color"}:
+    for k in {"cls", "bboxes", "conf", "masks", "keypoints", "batch_idx", "images", "color", "size"}:
         if k not in labels:
             continue
         if k == "cls" and labels[k].ndim == 2:
@@ -744,6 +746,18 @@ def plot_images(
         # Check if lengths match
         if len(color_cls) != len(cls):
             color_cls = None  # Disable color annotation if lengths don't match
+
+    size_cls = labels.get("size", None)  # size class indices, may be None
+    # Ensure size_cls has same length as cls, otherwise set to None
+    if size_cls is not None:
+        if isinstance(size_cls, torch.Tensor):
+            size_cls = size_cls.cpu().numpy()
+        if size_cls.ndim == 2:
+            size_cls = size_cls.squeeze(1)  # (n, 1) -> (n,)
+        # Check if lengths match
+        if len(size_cls) != len(cls):
+            size_cls = None  # Disable size annotation if lengths don't match
+
     images = labels.get("img", images)  # default to input images
 
     if len(images) and isinstance(images, torch.Tensor):
@@ -793,6 +807,11 @@ def plot_images(
                 color_indices = color_cls[idx].astype("int")
             else:
                 color_indices = None
+            # Get size indices for this batch if available
+            if size_cls is not None:
+                size_indices = size_cls[idx].astype("int")
+            else:
+                size_indices = None
             labels = confs is None
             conf = confs[idx] if confs is not None else None  # check for confidence presence (label vs pred)
 
@@ -812,15 +831,22 @@ def plot_images(
                 for j, box in enumerate(boxes.astype(np.int64).tolist()):
                     c = classes[j]
                     draw_color = colors(c)
-                    # Get class name
-                    cls_name = names.get(c, c) if names else c
+                    # Build label parts
+                    label_parts = []
                     # Get color name if available
                     if color_names and color_indices is not None and j < len(color_indices):
                         col_idx = int(color_indices[j])
                         col_name = color_names[col_idx] if col_idx < len(color_names) else str(col_idx)
-                        full_label = f"{col_name}-{cls_name}"
-                    else:
-                        full_label = f"{cls_name}"
+                        label_parts.append(col_name)
+                    # Get class name
+                    cls_name = names.get(c, c) if names else c
+                    label_parts.append(str(cls_name))
+                    # Get size name if available
+                    if size_names and size_indices is not None and j < len(size_indices):
+                        size_idx = int(size_indices[j])
+                        size_name = size_names[size_idx] if size_idx < len(size_names) else str(size_idx)
+                        label_parts.append(size_name)
+                    full_label = "-".join(label_parts) if label_parts else str(c)
                     if labels or conf[j] > conf_thres:
                         label = full_label if labels else f"{full_label} {conf[j]:.1f}"
                         annotator.box_label(box, label, color=draw_color)
@@ -828,17 +854,25 @@ def plot_images(
             elif len(classes) and not len(kpts):
                 # Only draw labels here if there are no keypoints (keypoints will draw their own labels)
                 for ci, c in enumerate(classes):
+                    # Build label parts
+                    label_parts = []
                     # Use color index for coloring if available, otherwise use class index
                     if color_names and color_indices is not None and ci < len(color_indices):
                         color_idx = int(color_indices[ci])
                         draw_color = colors(color_idx)  # Color by actual color index
                         col_name = color_names[color_idx] if color_idx < len(color_names) else str(color_idx)
-                        cls_name = names.get(c, c) if names else c
-                        full_label = f"{col_name}-{cls_name}"
+                        label_parts.append(col_name)
                     else:
                         draw_color = colors(c)  # Color by class index
-                        cls_name = names.get(c, c) if names else c
-                        full_label = f"{cls_name}"
+                    # Get class name
+                    cls_name = names.get(c, c) if names else c
+                    label_parts.append(str(cls_name))
+                    # Get size name if available
+                    if size_names and size_indices is not None and ci < len(size_indices):
+                        size_idx = int(size_indices[ci])
+                        size_name = size_names[size_idx] if size_idx < len(size_names) else str(size_idx)
+                        label_parts.append(size_name)
+                    full_label = "-".join(label_parts) if label_parts else str(c)
                     label = full_label if labels else f"{full_label} {conf[0]:.1f}"
                     annotator.text([x, y], label, txt_color=draw_color, box_color=(64, 64, 64, 128))
 
@@ -859,7 +893,7 @@ def plot_images(
                     if labels or conf[j] > conf_thres:
                         annotator.kpts(kpts_[j], shape=mosaic_shape, conf_thres=conf_thres)
 
-                        # Add label with class and color information for keypoints
+                        # Add label with class, color and size information for keypoints
                         kpts_j = kpts_[j]
                         valid_kpts = kpts_j[(kpts_j[:, 0] > 0) & (kpts_j[:, 1] > 0)]
                         if len(valid_kpts) > 0:
@@ -877,6 +911,12 @@ def plot_images(
                             cls_idx = int(classes[j])
                             cls_name = names.get(cls_idx, cls_idx) if names else cls_idx
                             label_parts.append(str(cls_name))
+
+                            # Add size name if available
+                            if size_names and size_indices is not None and j < len(size_indices):
+                                size_idx = int(size_indices[j])
+                                size_name = size_names[size_idx] if size_idx < len(size_names) else str(size_idx)
+                                label_parts.append(size_name)
 
                             if label_parts:
                                 label = "-".join(label_parts)

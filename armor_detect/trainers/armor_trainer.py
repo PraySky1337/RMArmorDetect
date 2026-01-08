@@ -111,7 +111,7 @@ class ArmorTrainer(yolo.detect.DetectionTrainer):
         )
 
     def plot_training_samples(self, batch: dict[str, Any], ni: int) -> None:
-        """Plot training samples with their annotations including color labels.
+        """Plot training samples with their annotations including color and size labels.
 
         For keypoint-only mode, bboxes are excluded from visualization.
 
@@ -120,6 +120,7 @@ class ArmorTrainer(yolo.detect.DetectionTrainer):
             ni: Number of iterations.
         """
         color_names = self.data.get("color_names", None)
+        size_names = self.data.get("size_names", None)
 
         # Create a copy without bboxes for keypoint-only visualization
         plot_batch = {k: v for k, v in batch.items() if k != "bboxes"}
@@ -130,6 +131,7 @@ class ArmorTrainer(yolo.detect.DetectionTrainer):
             fname=self.save_dir / f"train_batch{ni}.jpg",
             names=self.data["names"],
             color_names=color_names,
+            size_names=size_names,
             on_plot=self.on_plot,
         )
 
