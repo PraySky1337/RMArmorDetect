@@ -362,14 +362,14 @@ def postprocess(preds, orig_shape, preprocess_info, conf_thres, iou_thres, model
     nkpt, ndim = model.model[-1].kpt_shape
     nk = nkpt * ndim
 
-    # Split predictions
+    # Split predictions (order matches Pose head output: num + color + size + kpt)
     offset = 0
+    num_scores   = pred_data[offset : offset + nc_num]    # (nc_num, na)
+    offset += nc_num
     color_scores = pred_data[offset : offset + nc_color]  # (nc_color, na)
     offset += nc_color
     size_scores  = pred_data[offset : offset + nc_size]   # (nc_size, na)
     offset += nc_size
-    num_scores   = pred_data[offset : offset + nc_num]    # (nc_num, na)
-    offset += nc_num
     kpt_data     = pred_data[offset:]                     # (nk, na)
 
     # Get confidence and indices

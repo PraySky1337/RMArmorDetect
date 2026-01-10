@@ -19,14 +19,14 @@ wing_epsilon: 2.0 # Smoothing parameter for logarithmic part
 
 # Loss weights - 平衡各个分支
 # 注意：分类损失现在对所有anchor计算（包括背景），权重需要降低
-pose: 5.0         # keypoint loss权重
-kobj: 1.0         # Keypoint objectness weight
-cls: 1.0          # 数字分类loss权重（降低，因为负样本也参与）
-color: 0.75       # 颜色分类权重（降低）
-size: 0.75        # 尺寸分类权重（降低）
+pose: 2.0         # keypoint loss权重
+kobj: 1.5         # Keypoint objectness weight
+cls: 1.5        # 数字分类loss权重（降低，因为负样本也参与）
+color: 1.0      # 颜色分类权重（降低）
+size: 0.8       # 尺寸分类权重（降低）
 
 # Focal Loss parameters
-focal_gamma: 1.5  # Gamma for hard example mining
+focal_gamma: 2.0  # Gamma for hard example mining
 
 # Model scaling constants
 # Format: [depth, width, max_channels]

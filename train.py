@@ -50,6 +50,16 @@ def load_train_cfg(path: Path = TRAIN_CFG) -> dict:
     return cfg
 
 
+def load_model_cfg(path: Path = MODEL_CFG) -> dict:
+    """Load model configuration YAML to extract loss weights and other params."""
+    if not path.exists():
+        raise FileNotFoundError(f"Model config not found: {path}")
+    cfg = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Invalid config structure in {path}, expected a mapping.")
+    return cfg
+
+
 def infer_dataset_info(labels_dir: Path) -> tuple[set[int], tuple[int, int], set[int], set[int]]:
     """Infer classes, keypoints shape, color classes, and size classes from label files.
 
@@ -139,6 +149,7 @@ def write_data_yaml(names: dict[int, str], kpt_shape: tuple[int, int], train_txt
 def main() -> None:
     """Main training entry point using ArmorTrainer."""
     cfg = load_train_cfg()
+    model_cfg = load_model_cfg()
 
     if cfg.get("tensorboard", True):
         SETTINGS.update({"tensorboard": True})
@@ -217,6 +228,16 @@ def main() -> None:
         "save": cfg.get("save", True),
         "save_period": int(cfg.get("save_period", -1)),
         "plots": cfg.get("plots", True),
+        # Loss weights from model config (armor_yolo11.yaml)
+        "pose": float(model_cfg.get("pose", 12.0)),
+        "kobj": float(model_cfg.get("kobj", 1.0)),
+        "cls": float(model_cfg.get("cls", 0.5)),
+        "color": float(model_cfg.get("color", 1.0)),
+        "size": float(model_cfg.get("size", 1.0)),
+        # Focal Loss and WingLoss parameters
+        "focal_gamma": float(model_cfg.get("focal_gamma", 1.5)),
+        "wing_omega": float(model_cfg.get("wing_omega", 10.0)),
+        "wing_epsilon": float(model_cfg.get("wing_epsilon", 2.0)),
     }
 
     # Create trainer and start training

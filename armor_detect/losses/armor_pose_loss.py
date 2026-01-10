@@ -73,8 +73,8 @@ class ArmorPoseLoss:
         self.bce_color = nn.BCEWithLogitsLoss(reduction="none")
         self.bce_size = nn.BCEWithLogitsLoss(reduction="none")
 
-        # Focal Loss gamma for hard example mining
-        self.focal_gamma = FOCAL_GAMMA
+        # Focal Loss gamma for hard example mining (read from hyp, fallback to constant)
+        self.focal_gamma = getattr(h, 'focal_gamma', FOCAL_GAMMA)
 
         # Positive sample assignment parameters
         self.topk = TOP_K_ANCHORS

@@ -1,5 +1,5 @@
 # ================= 基础训练设置 =================
-epochs: 200
+epochs: 300
 imgsz: 416
 batch: 256
 device: "0,1"
@@ -16,20 +16,20 @@ seed: 0
 
 # ================= 优化器 & 学习率 =================
 optimizer: "AdamW"
-lr0: 0.00025        # 提高初始学习率
-lrf: 0.25          # 提高最终学习率比例，最终lr=0.0000625
+lr0: 0.0004       # 提高初始学习率
+lrf: 0.05          # 提高最终学习率比例，最终lr=0.0000625
 momentum: 0.937
 weight_decay: 0.0005  # 降低weight decay
 
-warmup_epochs: 5
+warmup_epochs: 8
 warmup_momentum: 0.8
 warmup_bias_lr: 0.1
 cos_lr: true
  
 # ================= 数据增强超参数 =================
-hsv_h: 0.08
-hsv_s: 0.9
-hsv_v: 0.9
+hsv_h: 0.07
+hsv_s: 0.7
+hsv_v: 0.7
 
 degrees: 5.0
 translate: 0.2
