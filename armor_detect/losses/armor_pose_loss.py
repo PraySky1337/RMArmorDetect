@@ -80,6 +80,9 @@ class ArmorPoseLoss:
         self.topk = TOP_K_ANCHORS
         self.max_dist_ratio = MAX_DIST_RATIO
 
+        # Background weight for color/size loss (soft constraint on negative samples)
+        self.bg_weight = getattr(h, 'bg_weight', 0.1)
+
     def __call__(
         self, preds: tuple, batch: dict[str, torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -261,29 +264,23 @@ class ArmorPoseLoss:
         focal_weight = (1 - pt) ** self.focal_gamma
         loss[2] = (cls_loss * focal_weight).sum() / target_scores_sum
 
-        # Color classification loss - only on foreground anchors (pure BCE)
-        # (Color is a categorical attribute, not affected by background anchors)
+        # Color classification loss - on ALL anchors with weighted BCE
+        # Foreground: weight=1.0, Background: weight=bg_weight (soft constraint)
         if "color" in batch:
-            if fg_mask.sum() > 0:
-                fg_color_pred = cls_color_pred[fg_mask]
-                fg_color_target = color_targets[fg_mask]
-                color_loss = self.bce_color(fg_color_pred, fg_color_target)
-                loss[3] = color_loss.sum() / max(fg_mask.sum(), 1.0)
-            else:
-                loss[3] = (cls_color_pred * 0).sum()
+            color_loss = self.bce_color(cls_color_pred, color_targets)  # (bs, na, nc_color)
+            # Build weight mask: fg=1.0, bg=bg_weight
+            color_weight = fg_mask.float().unsqueeze(-1) * (1.0 - self.bg_weight) + self.bg_weight
+            loss[3] = (color_loss * color_weight).sum() / target_scores_sum
         else:
             loss[3] = (cls_color_pred * 0).sum()
 
-        # Size classification loss - only on foreground anchors (pure BCE)
-        # (Size is a categorical attribute, not affected by background anchors)
+        # Size classification loss - on ALL anchors with weighted BCE
+        # Foreground: weight=1.0, Background: weight=bg_weight (soft constraint)
         if "size" in batch:
-            if fg_mask.sum() > 0:
-                fg_size_pred = cls_size_pred[fg_mask]
-                fg_size_target = size_targets[fg_mask]
-                size_loss = self.bce_size(fg_size_pred, fg_size_target)
-                loss[4] = size_loss.sum() / max(fg_mask.sum(), 1.0)
-            else:
-                loss[4] = (cls_size_pred * 0).sum()
+            size_loss = self.bce_size(cls_size_pred, size_targets)  # (bs, na, nc_size)
+            # Build weight mask: fg=1.0, bg=bg_weight
+            size_weight = fg_mask.float().unsqueeze(-1) * (1.0 - self.bg_weight) + self.bg_weight
+            loss[4] = (size_loss * size_weight).sum() / target_scores_sum
         else:
             loss[4] = (cls_size_pred * 0).sum()
 
