@@ -1,5 +1,5 @@
 # ================= 基础训练设置 =================
-epochs: 300
+epochs: 200
 imgsz: 416
 batch: 256
 device: "0,1"
@@ -7,8 +7,8 @@ workers: 32
 cache: "ram"
 
 # NMS和推理设置
-iou: 0.5   # NMS IoU阈值，从0.45提高到0.5
-conf: 0.5  # 置信度阈值，从0.25提高到0.5
+iou: 0.5    # NMS IoU阈值
+conf: 0.125 # 置信度阈值（适配 combined_conf: 0.5^3 ≈ 0.125）
 
 # train script only 
 train_ratio: 0.91
@@ -16,8 +16,8 @@ seed: 0
 
 # ================= 优化器 & 学习率 =================
 optimizer: "AdamW"
-lr0: 0.0004       # 提高初始学习率
-lrf: 0.05          # 提高最终学习率比例，最终lr=0.0000625
+lr0: 0.00025       
+lrf: 0.01         
 momentum: 0.937
 weight_decay: 0.0005  # 降低weight decay
 
@@ -27,9 +27,10 @@ warmup_bias_lr: 0.1
 cos_lr: true
  
 # ================= 数据增强超参数 =================
-hsv_h: 0.07
-hsv_s: 0.7
-hsv_v: 0.7
+# HSV 增强降低（保护颜色特征，避免红蓝混淆）
+hsv_h: 0.01  # 原 0.03
+hsv_s: 0.15  # 原 0.5
+hsv_v: 0.20  # 原 0.7 
 
 degrees: 5.0
 translate: 0.2
@@ -41,11 +42,11 @@ flipud: 0.0
 fliplr: 0.0
  
 mosaic: 1.0
-mixup: 0.1
+mixup: 0.0
 copy_paste: 0.0 
 erasing: 0.1
 
-close_mosaic: 100   # 最后50轮关闭mosaic
+close_mosaic: 50   # 最后50轮关闭mosaic
 
 # ================= 训练流程控制 =================
 patience: 50
@@ -66,6 +67,6 @@ plots: true
 
 # ================= 说明 =================
 # Loss 权重已在 armor_detect/configs/armor_yolo11.yaml 中定义:
-#   pose: 12.0, kobj: 1.0, cls: 0.5, color: 0.5
+#   pose: 2.0, kobj: 1.0, cls: 0.5, color: 0.5
 #   focal_gamma: 1.5
 #   wing_omega: 10.0, wing_epsilon: 2.0 

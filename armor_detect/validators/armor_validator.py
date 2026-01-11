@@ -99,15 +99,19 @@ class ArmorValidator(PoseValidator):
             size_scores = pred_data[nc_num + nc_color : nc_num + nc_color + nc_size]
             kpt_data = pred_data[nc_num + nc_color + nc_size :]
 
-            # Get confidence from number classification
+            # Get confidence from all classification branches
             num_conf, cls_indices = num_scores.max(dim=0)
-            color_indices = color_scores.argmax(dim=0)
-            size_indices = size_scores.argmax(dim=0)
+            color_conf, color_indices = color_scores.max(dim=0)
+            size_conf, size_indices = size_scores.max(dim=0)
 
-            # Confidence threshold filtering
-            conf_thres = 0.4
+            # FIX Bug #4: Use combined confidence (matches inference in preview_pose.py)
+            # This aligns training validation with actual deployment performance
+            combined_conf = num_conf * color_conf * size_conf
+
+            # Confidence threshold filtering (adjusted for combined conf: 0.5^3 ≈ 0.125)
+            conf_thres = getattr(self.args, 'conf', 0.125)
             max_dets = 50
-            valid_mask = num_conf > conf_thres
+            valid_mask = combined_conf > conf_thres
 
             if valid_mask.sum() == 0:
                 results.append({
@@ -119,8 +123,8 @@ class ArmorValidator(PoseValidator):
                 })
                 continue
 
-            # Extract valid predictions
-            valid_conf = num_conf[valid_mask]
+            # Extract valid predictions (use combined_conf for confidence output)
+            valid_conf = combined_conf[valid_mask]
             valid_cls = cls_indices[valid_mask]
             valid_color = color_indices[valid_mask]
             valid_size = size_indices[valid_mask]

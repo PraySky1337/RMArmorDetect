@@ -21,7 +21,7 @@ wing_epsilon: 2.0 # Smoothing parameter for logarithmic part
 # 注意：分类损失现在对所有anchor计算（包括背景），权重需要降低
 pose: 2.0         # keypoint loss权重
 kobj: 1.5         # Keypoint objectness weight
-cls: 1.5        # 数字分类loss权重（降低，因为负样本也参与）
+cls: 1.5          # 数字分类loss权重（降低，因为负样本也参与）
 color: 1.0      # 颜色分类权重（降低）
 size: 0.8       # 尺寸分类权重（降低）
 

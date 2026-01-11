@@ -231,14 +231,16 @@ class ArmorPoseLoss:
                 color_ids = color_ids.clamp(0, self.nc_color - 1)
                 size_ids = size_ids.clamp(0, self.nc_size - 1)
 
-                # Get OKS soft targets for these anchors (instead of hard 1.0)
+                # Get OKS soft targets for number classification (quality-aware)
                 # Cast to target dtype for AMP compatibility (FP16 targets vs FP32 OKS)
                 oks_soft = oks_scores[b, valid_anchor_indices].to(num_class_targets.dtype)
 
-                # Scatter to set targets using OKS soft labels
+                # Number classification: use OKS soft labels (quality-aware)
                 num_class_targets[b, valid_anchor_indices, cls_ids] = oks_soft
-                color_targets[b, valid_anchor_indices, color_ids] = oks_soft
-                size_targets[b, valid_anchor_indices, size_ids] = oks_soft
+                # Color and size classification: use hard labels (categorical attributes)
+                # These are deterministic properties, not affected by keypoint quality
+                color_targets[b, valid_anchor_indices, color_ids] = 1.0
+                size_targets[b, valid_anchor_indices, size_ids] = 1.0
 
         else:
             loss[0] = (kpt_pred * 0).sum()
@@ -259,21 +261,29 @@ class ArmorPoseLoss:
         focal_weight = (1 - pt) ** self.focal_gamma
         loss[2] = (cls_loss * focal_weight).sum() / target_scores_sum
 
-        # Color classification loss - on ALL anchors
+        # Color classification loss - only on foreground anchors (pure BCE)
+        # (Color is a categorical attribute, not affected by background anchors)
         if "color" in batch:
-            color_loss = self.bce_color(cls_color_pred, color_targets)  # (bs, na, nc_color)
-            pt = torch.exp(-color_loss)
-            focal_weight = (1 - pt) ** self.focal_gamma
-            loss[3] = (color_loss * focal_weight).sum() / target_scores_sum
+            if fg_mask.sum() > 0:
+                fg_color_pred = cls_color_pred[fg_mask]
+                fg_color_target = color_targets[fg_mask]
+                color_loss = self.bce_color(fg_color_pred, fg_color_target)
+                loss[3] = color_loss.sum() / max(fg_mask.sum(), 1.0)
+            else:
+                loss[3] = (cls_color_pred * 0).sum()
         else:
             loss[3] = (cls_color_pred * 0).sum()
 
-        # Size classification loss - on ALL anchors
+        # Size classification loss - only on foreground anchors (pure BCE)
+        # (Size is a categorical attribute, not affected by background anchors)
         if "size" in batch:
-            size_loss = self.bce_size(cls_size_pred, size_targets)  # (bs, na, nc_size)
-            pt = torch.exp(-size_loss)
-            focal_weight = (1 - pt) ** self.focal_gamma
-            loss[4] = (size_loss * focal_weight).sum() / target_scores_sum
+            if fg_mask.sum() > 0:
+                fg_size_pred = cls_size_pred[fg_mask]
+                fg_size_target = size_targets[fg_mask]
+                size_loss = self.bce_size(fg_size_pred, fg_size_target)
+                loss[4] = size_loss.sum() / max(fg_mask.sum(), 1.0)
+            else:
+                loss[4] = (cls_size_pred * 0).sum()
         else:
             loss[4] = (cls_size_pred * 0).sum()
 
