@@ -141,6 +141,7 @@ def write_data_yaml(names: dict[int, str], kpt_shape: tuple[int, int], train_txt
         "names": {int(k): v for k, v in names.items()},
         "color_names": COLOR_NAMES,
         "size_names": SIZE_NAMES,
+        "nc": len(names),  # Number of classes for standard YOLO compatibility
     }
     DATA_YAML.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     return DATA_YAML
@@ -149,7 +150,10 @@ def write_data_yaml(names: dict[int, str], kpt_shape: tuple[int, int], train_txt
 def main() -> None:
     """Main training entry point using ArmorTrainer."""
     cfg = load_train_cfg()
-    model_cfg = load_model_cfg()
+    model_cfg_path = Path(cfg.get("model", str(MODEL_CFG)))
+    if not model_cfg_path.is_absolute():
+        model_cfg_path = (ROOT / model_cfg_path).resolve()
+    model_cfg = load_model_cfg(model_cfg_path)
 
     if cfg.get("tensorboard", True):
         SETTINGS.update({"tensorboard": True})
@@ -178,7 +182,7 @@ def main() -> None:
     # Build training overrides from config
     overrides = {
         # Model and data
-        "model": str(MODEL_CFG),
+        "model": str(model_cfg_path),
         "data": str(data_yaml),
         # Basic training settings
         "epochs": int(cfg.get("epochs", 200)),

@@ -7,7 +7,7 @@ IN_DELETE = 0x00000200
 EVENT_MASK = IN_MODIFY | IN_CREATE | IN_DELETE
 
 libc = ctypes.CDLL("libc.so.6")
-SRC = "/home/ljy/Desktop/RMArmorDetect"
+SRC = "/home/praysky/RMArmorDetect"
 DST = "rry@192.168.50.226:/home/rry/RMArmorDetect"
 PORT = "22"
 

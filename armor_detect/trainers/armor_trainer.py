@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ultralytics.models import yolo
-from ultralytics.nn.tasks import PoseModel
+from armor_detect.models.armor_pose_model import ArmorPoseModel
 from ultralytics.utils import DEFAULT_CFG
 from ultralytics.utils.plotting import plot_images
 
@@ -25,7 +25,7 @@ class ArmorTrainer(yolo.detect.DetectionTrainer):
 
     Attributes:
         args (dict): Configuration arguments for training.
-        model (PoseModel): The pose estimation model being trained.
+        model (ArmorPoseModel): The pose estimation model being trained.
         data (dict): Dataset configuration including keypoint shape information.
         loss_names (tuple): Names of the loss components (pose, kobj, cls, color, size).
 
@@ -59,7 +59,7 @@ class ArmorTrainer(yolo.detect.DetectionTrainer):
         cfg: str | Path | dict[str, Any] | None = None,
         weights: str | Path | None = None,
         verbose: bool = True,
-    ) -> PoseModel:
+    ) -> ArmorPoseModel:
         """Get pose estimation model with specified configuration and weights.
 
         Args:
@@ -68,9 +68,9 @@ class ArmorTrainer(yolo.detect.DetectionTrainer):
             verbose: Whether to display model information.
 
         Returns:
-            PoseModel: Initialized pose estimation model.
+            ArmorPoseModel: Initialized pose estimation model.
         """
-        model = PoseModel(
+        model = ArmorPoseModel(
             cfg,
             nc=self.data["nc"],
             ch=self.data["channels"],

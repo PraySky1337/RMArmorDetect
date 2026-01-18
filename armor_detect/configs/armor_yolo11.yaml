@@ -3,7 +3,7 @@
 # Keypoint-only detection without bounding boxes
 
 # Model scale: n(nano), s(small), m(medium), l(large), x(xlarge)
-scale: 's'
+scale: 'n'
 
 # Class configuration
 nc: 64            # Total classes (nc_num * nc_color * nc_size = 8 * 4 * 2)
@@ -21,16 +21,16 @@ wing_epsilon: 2.0 # Smoothing parameter for logarithmic part
 # 注意：分类损失现在对所有anchor计算（包括背景），权重需要降低
 pose: 2.0         # keypoint loss权重
 kobj: 1.5         # Keypoint objectness weight
-cls: 1.5          # 数字分类loss权重（降低，因为负样本也参与）
-color: 1.0       # 颜色分类权重（降低）
-size: 0.8       # 尺寸分类权重（降低）
+cls: 2.0          # 数字分类loss权重（提升，number任务最复杂）
+color: 1.5       # 颜色分类权重（提升，强化颜色分类和负样本约束）
+size: 1.0       # 尺寸分类权重
 
 # Focal Loss parameters
-focal_gamma: 2.0  # Gamma for hard example mining
+focal_gamma: 1.0  # 降低gamma，减少对简单样本的压抑（原2.0）
 
 # Background weight for color/size classification (soft constraint)
-# Foreground=1.0, Background=bg_weight, range: 0.05~0.2
-bg_weight: 0.1
+# Foreground=1.0, Background=bg_weight, range: 0.05~0.5
+bg_weight: 0.3  # 提升负样本约束，减少对红蓝色块的误检
 
 # Model scaling constants
 # Format: [depth, width, max_channels]

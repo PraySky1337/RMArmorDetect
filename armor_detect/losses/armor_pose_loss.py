@@ -234,14 +234,12 @@ class ArmorPoseLoss:
                 color_ids = color_ids.clamp(0, self.nc_color - 1)
                 size_ids = size_ids.clamp(0, self.nc_size - 1)
 
-                # Get OKS soft targets for number classification (quality-aware)
-                # Cast to target dtype for AMP compatibility (FP16 targets vs FP32 OKS)
-                oks_soft = oks_scores[b, valid_anchor_indices].to(num_class_targets.dtype)
-
-                # Number classification: use OKS soft labels (quality-aware)
-                num_class_targets[b, valid_anchor_indices, cls_ids] = oks_soft
-                # Color and size classification: use hard labels (categorical attributes)
-                # These are deterministic properties, not affected by keypoint quality
+                # Number/Color/Size classification: all use hard labels
+                # OKS-based soft labels for number classification caused issues:
+                # - Keypoint quality ≠ digit readability
+                # - Soft labels reduce classification confidence
+                # - Hard labels provide clearer training signal
+                num_class_targets[b, valid_anchor_indices, cls_ids] = 1.0
                 color_targets[b, valid_anchor_indices, color_ids] = 1.0
                 size_targets[b, valid_anchor_indices, size_ids] = 1.0
 

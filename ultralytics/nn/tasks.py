@@ -585,9 +585,16 @@ class PoseModel(DetectionModel):
         super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
 
     def init_criterion(self):
-        """Initialize the loss criterion for the PoseModel."""
-        from armor_detect.losses.armor_pose_loss import ArmorPoseLoss
-        return ArmorPoseLoss(self)
+        """Initialize the loss criterion for the PoseModel.
+
+        Note:
+            This method is deprecated for this project.
+            Use armor_detect.models.ArmorPoseModel for triple-branch training.
+        """
+        raise NotImplementedError(
+            "PoseModel.init_criterion() is deprecated for this project. "
+            "Use armor_detect.models.ArmorPoseModel for triple-branch training."
+        )
 
 
 class ClassificationModel(BaseModel):
@@ -1681,7 +1688,9 @@ def yaml_model_load(path):
     unified_path = re.sub(r"(\d+)([nslmx])(.+)?$", r"\1\3", str(path))  # i.e. yolov8x.yaml -> yolov8.yaml
     yaml_file = check_yaml(unified_path, hard=False) or check_yaml(path)
     d = YAML.load(yaml_file)  # model dict
-    d["scale"] = guess_model_scale(path)
+    # If scale is already in the YAML config, use it; otherwise guess from path
+    if "scale" not in d or not d["scale"]:
+        d["scale"] = guess_model_scale(path)
     d["yaml_file"] = str(path)
     return d
 

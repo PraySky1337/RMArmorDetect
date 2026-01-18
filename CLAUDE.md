@@ -4,11 +4,14 @@
 
 本项目基于 Ultralytics YOLO 框架，但有自定义的装甲板检测逻辑。
 
+**依赖关系原则**：`armor_detect` 单向依赖 `ultralytics`（armor_detect → ultralytics ✓，ultralytics → armor_detect ✗）
+
 ### 核心组件位置
 
 | 组件 | 位置 | 说明 |
 |------|------|------|
-| **Pose Head** | `ultralytics/nn/modules/head.py` → `Pose` | 三分支分类头 (num + color + size) |
+| **Model** | `armor_detect/models/armor_pose_model.py` → `ArmorPoseModel` | 模型入口 |
+| **Pose Head** | `armor_detect/models/heads/armor_pose_head.py` → `ArmorPoseHead` | 三分支分类头 (num + color + size) |
 | **Loss** | `armor_detect/losses/armor_pose_loss.py` → `ArmorPoseLoss` | 三分支损失函数 |
 | **Trainer** | `armor_detect/trainers/armor_trainer.py` → `ArmorTrainer` | 训练器 |
 | **Validator** | `armor_detect/validators/armor_validator.py` → `ArmorValidator` | 验证器 |
@@ -18,29 +21,32 @@
 
 ```
 train.py
-  → ArmorTrainer
-    → PoseModel (ultralytics/nn/tasks.py)
+  → ArmorTrainer (armor_detect/trainers/)
+    → ArmorPoseModel (armor_detect/models/)
+      → DetectionModel (ultralytics) ← 单向依赖
+      → ArmorPoseHead (armor_detect/models/heads/)
       → init_criterion() → ArmorPoseLoss (armor_detect/losses/)
-      → Pose head (ultralytics/nn/modules/head.py)
 ```
 
 ## 重要警告
 
-### 1. Loss 函数选择
+### 1. 使用正确的模型类
 
-`PoseModel.init_criterion()` (ultralytics/nn/tasks.py:588-591) 决定使用哪个 loss：
+训练时必须使用 `ArmorPoseModel`，**不要**使用 `ultralytics.PoseModel`：
 
 ```python
-def init_criterion(self):
-    from armor_detect.losses.armor_pose_loss import ArmorPoseLoss
-    return ArmorPoseLoss(self)
-```
+# ✓ 正确
+from armor_detect.models import ArmorPoseModel
+model = ArmorPoseModel(cfg)
 
-**不要改回 `v8PoseLoss`** - 那是旧的双分支版本，已删除。
+# ❌ 错误 - 会抛出 NotImplementedError
+from ultralytics.nn.tasks import PoseModel
+model = PoseModel(cfg)
+```
 
 ### 2. Head 输出格式
 
-`Pose` head 输出 **4 个值**（三分支）：
+`ArmorPoseHead` 输出 **4 个值**（三分支）：
 ```python
 return feats, (cls_num, cls_color, cls_size, kpt)
 ```
@@ -57,7 +63,34 @@ return feats, (cls_num, cls_color, cls_size, kpt)
 
 参数顺序：`nc_num`, `nc_color`, `nc_size`, `kpt_shape`, `ch`（ch 由 parse_model 自动追加）
 
+### 4. 禁止反向依赖
+
+**ultralytics 目录下的代码不能导入 armor_detect 中的任何模块**。
+
+验证方法：
+```bash
+grep -r "from armor_detect" ultralytics/
+grep -r "import armor_detect" ultralytics/
+# 应该没有结果
+```
+
 ## 历史教训
+
+### 2026-01-17: 依赖解耦
+
+**问题**: `ultralytics/nn/tasks.py` 中的 `PoseModel.init_criterion()` 导入了 `armor_detect`，
+导致反向依赖，违反了单向依赖原则。
+
+**解决**:
+1. 创建 `ArmorPoseModel` 类在 `armor_detect/models/` 中
+2. 修改 `ArmorTrainer` 使用 `ArmorPoseModel`
+3. 将 `PoseModel.init_criterion()` 改为抛出 `NotImplementedError`
+
+**涉及文件**:
+- `armor_detect/models/armor_pose_model.py` (新建)
+- `armor_detect/trainers/armor_trainer.py` (修改)
+- `armor_detect/models/__init__.py` (修改)
+- `ultralytics/nn/tasks.py` (修改)
 
 ### 2026-01-05: 双分支→三分支升级
 

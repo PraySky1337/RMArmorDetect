@@ -1,0 +1,66 @@
+# Armor Detection Model Configuration
+# ShuffleNetV2 backbone with YOLO11 head
+
+# Model scale: n(nano), s(small), m(medium), l(large), x(xlarge)
+scale: 'n'
+
+# Class configuration
+nc: 64
+nc_num: 8
+nc_color: 4
+nc_size: 2
+kpt_shape: [4, 2]
+
+# WingLoss parameters for keypoint regression
+wing_omega: 30.0
+wing_epsilon: 2.0
+
+# Loss weights
+pose: 2.0
+kobj: 1.5
+cls: 2.0
+color: 1.5
+size: 1.0
+
+# Focal Loss parameters
+focal_gamma: 1.0
+
+# Background weight for color/size classification
+bg_weight: 0.3
+
+# Model scaling constants
+# Format: [depth, width, max_channels]
+scales:
+  n: [0.375, 0.1875, 512]
+  s: [0.50, 0.50, 1024]
+  m: [0.50, 1.00, 512]
+  l: [1.00, 1.00, 512]
+  x: [1.00, 1.50, 512]
+
+# ShuffleNetV2 backbone outputs P3/P4/P5 as a list
+backbone:
+  - [-1, 1, ShuffleNetV2Backbone, [0.5]]
+  # Index channels assume width_mult=0.5
+  - [0, 1, Index, [48, 0]]
+  - [0, 1, Index, [96, 1]]
+  - [0, 1, Index, [192, 2]]
+
+# YOLO11 Head with FPN + PAN structure
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 2], 1, Concat, [1]]
+  - [-1, 1, C3k2, [256, False]]
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 1], 1, Concat, [1]]
+  - [-1, 1, C3k2, [128, False]]
+
+  - [-1, 1, Conv, [128, 3, 2]]
+  - [[-1, 6], 1, Concat, [1]]
+  - [-1, 1, C3k2, [256, False]]
+
+  - [-1, 1, Conv, [256, 3, 2]]
+  - [[-1, 3], 1, Concat, [1]]
+  - [-1, 1, C3k2, [512, True]]
+
+  - [[9, 12, 15], 1, Pose, [8, 4, 2, [4, 2]]]

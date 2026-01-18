@@ -85,7 +85,7 @@ class ArmorPoseHead(nn.Module):
         self.stride = torch.zeros(self.nl)
         self._stride_initialized = False
 
-        # Number classification branch
+        # Number classification branch (8 classes - keep full capacity)
         c3_num = max(ch[0], min(self.nc_num, 100))
         self.cv3 = nn.ModuleList(
             nn.Sequential(
@@ -96,8 +96,8 @@ class ArmorPoseHead(nn.Module):
             for x in ch
         )
 
-        # Color classification branch
-        c3_color = max(ch[0], min(self.nc_color, 100))
+        # Color classification branch (4 classes - reduce to half)
+        c3_color = max(ch[0] // 2, min(self.nc_color * 32, 100))
         self.cv_color = nn.ModuleList(
             nn.Sequential(
                 nn.Sequential(DWConv(x, x, 3), Conv(x, c3_color, 1)),
@@ -107,8 +107,8 @@ class ArmorPoseHead(nn.Module):
             for x in ch
         )
 
-        # Size classification branch
-        c3_size = max(ch[0], min(self.nc_size, 100))
+        # Size classification branch (2 classes - reduce more)
+        c3_size = max(ch[0] // 4, min(self.nc_size * 64, 100))
         self.cv_size = nn.ModuleList(
             nn.Sequential(
                 nn.Sequential(DWConv(x, x, 3), Conv(x, c3_size, 1)),
@@ -118,8 +118,8 @@ class ArmorPoseHead(nn.Module):
             for x in ch
         )
 
-        # Keypoint prediction branch
-        c4 = max(ch[0] // 4, self.nk)
+        # Keypoint prediction branch (increased capacity for better localization)
+        c4 = max(ch[0] // 2, self.nk)
         self.cv4 = nn.ModuleList(
             nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.nk, 1))
             for x in ch
@@ -224,15 +224,16 @@ class ArmorPoseHead(nn.Module):
 
         bs, na, _ = prob_num.shape
 
-        # Compute joint probability: color x size x num
-        # Result shape: (bs, na, nc_color * nc_size * nc_num)
-        joint_prob = torch.zeros(bs, na, self.nc_color * self.nc_size * self.nc_num, device=cls_num.device)
+        # Compute joint probability: color x size x num (vectorized)
+        # Expand dimensions for broadcasting: (bs, na, 4, 2, 8)
+        p_color = prob_color.unsqueeze(-1).unsqueeze(-1)  # (bs, na, nc_color, 1, 1)
+        p_size = prob_size.unsqueeze(-1).unsqueeze(0)     # (bs, na, 1, nc_size, 1)
+        p_num = prob_num.unsqueeze(-2).unsqueeze(-2)      # (bs, na, 1, 1, nc_num)
 
-        for c in range(self.nc_color):
-            for s in range(self.nc_size):
-                for n in range(self.nc_num):
-                    idx = c * self.nc_size * self.nc_num + s * self.nc_num + n
-                    joint_prob[:, :, idx] = prob_color[:, :, c] * prob_size[:, :, s] * prob_num[:, :, n]
+        # Broadcast multiplication and flatten
+        # Result shape: (bs, na, nc_color * nc_size * nc_num)
+        joint = p_color * p_size * p_num  # (bs, na, nc_color, nc_size, nc_num)
+        joint_prob = joint.reshape(bs, na, -1)
 
         return joint_prob
 

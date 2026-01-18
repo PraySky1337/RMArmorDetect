@@ -1,10 +1,11 @@
 # ================= 基础训练设置 =================
-epochs: 200
+epochs: 350
 imgsz: 416
-batch: 256
+batch: 256  # 2 GPUs x 80 per GPU (RTX 3090 24GB, imgsz=416)
 device: "0,1"
-workers: 32
+workers: 36
 cache: "ram"
+model: "armor_detect/configs/armor_yolo11.yaml"
 
 # NMS和推理设置
 iou: 0.5    # NMS IoU阈值
@@ -28,9 +29,9 @@ cos_lr: true
  
 # ================= 数据增强超参数 =================
 # HSV 增强降低（保护颜色特征，避免红蓝混淆）
-hsv_h: 0.01  # 原 0.03
+hsv_h: 0.005  # 原 0.03
 hsv_s: 0.15  # 原 0.5
-hsv_v: 0.20  # 原 0.7 
+hsv_v: 0.30  # 原 0.7 
 
 degrees: 5.0
 translate: 0.2
@@ -46,7 +47,7 @@ mixup: 0.0
 copy_paste: 0.0 
 erasing: 0.1
 
-close_mosaic: 50   # 最后50轮关闭mosaic
+close_mosaic: 75   # 最后75轮关闭mosaic
 
 # ================= 训练流程控制 =================
 patience: 50

@@ -1,7 +1,7 @@
 """Utility functions for armor detection."""
 
 # Constants
-INITIAL_CONF = 0.01
+INITIAL_CONF = 0.1  # 提高初始置信度，改善训练后期conf偏低问题 (bias: -4.6 → -2.2)
 TOP_K_ANCHORS = 9        # 减少正样本数量，集中学习信号
 MAX_DIST_RATIO = 2.0     # 收紧距离阈值
 FOCAL_GAMMA = 1.5

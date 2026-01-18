@@ -40,6 +40,7 @@ class ArmorValidator(PoseValidator):
         self.size_names = SIZE_NAMES
         self.size_correct = 0
         self.size_total = 0
+        self.size_accuracy = 0.0  # Initialize size_accuracy
 
     def preprocess(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Preprocess batch including size data."""
@@ -62,6 +63,7 @@ class ArmorValidator(PoseValidator):
         self.size_names = self.data.get("size_names", SIZE_NAMES)
         self.size_correct = 0
         self.size_total = 0
+        self.size_accuracy = 0.0
 
     def _find_pose_head(self, model: torch.nn.Module):
         """Find the pose head in the model."""
@@ -197,11 +199,26 @@ class ArmorValidator(PoseValidator):
 
         return stats
 
-    def finalize_metrics(self) -> None:
+    def finalize_metrics(self, *args, **kwargs) -> None:
         """Finalize and log metrics including size accuracy."""
-        super().finalize_metrics()
+        super().finalize_metrics(*args, **kwargs)
 
-        # Log size accuracy
-        if self.size_total > 0:
-            size_acc = self.size_correct / self.size_total * 100
-            LOGGER.info(f"Size accuracy: {size_acc:.2f}%")
+        # Calculate and store size accuracy (TensorBoard已监控，无需日志)
+        self.size_accuracy = self.size_correct / max(self.size_total, 1)
+
+        # Ensure color_accuracy is initialized (may be missing if parent didn't set it)
+        if not hasattr(self, 'color_accuracy'):
+            self.color_accuracy = self.color_correct / max(self.color_total, 1)
+
+    def get_stats(self) -> dict[str, Any]:
+        """Get statistics including size accuracy.
+
+        Returns metrics with 'acc/' prefix for TensorBoard grouping.
+        """
+        stats = super().get_stats()
+        # Calculate color accuracy on-the-fly (same as parent class)
+        color_total = getattr(self, 'color_total', 0)
+        color_correct = getattr(self, 'color_correct', 0)
+        stats["acc/color"] = color_correct / max(color_total, 1)
+        stats["acc/size"] = self.size_accuracy
+        return stats
