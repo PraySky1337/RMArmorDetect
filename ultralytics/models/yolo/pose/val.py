@@ -23,12 +23,12 @@ class PoseValidator(DetectionValidator):
     Attributes:
         sigma (np.ndarray): Sigma values for OKS calculation.
         kpt_shape (list[int]): Shape of keypoints [nkpt, ndim].
-        nc_color (int): Number of color classes.
-        color_names (list[str]): Names of color classes.
+        nc_color (int): Number of color classes (armor detection custom).
+        color_names (list[str]): Names of color classes (armor detection custom).
     """
 
     def __init__(self, dataloader=None, save_dir=None, args=None, _callbacks=None) -> None:
-        """Initialize PoseValidator for keypoint-only pose estimation."""
+        """Initialize PoseValidator for keypoint-only pose estimation (armor detection custom)."""
         super().__init__(dataloader, save_dir, args, _callbacks)
         self.sigma = None
         self.kpt_shape = None

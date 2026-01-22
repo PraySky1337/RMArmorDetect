@@ -33,7 +33,7 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
 
     Examples:
         >>> from ultralytics.models.yolo.pose import PoseTrainer
-        >>> args = dict(model="yolo11n-pose.pt", data="coco8-pose.yaml", epochs=3)
+        >>> args = dict(model="yolo26n-pose.pt", data="coco8-pose.yaml", epochs=3)
         >>> trainer = PoseTrainer(overrides=args)
         >>> trainer.train()
     """
@@ -91,7 +91,12 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
 
     def get_validator(self):
         """Return an instance of the PoseValidator class for validation."""
+        # Armor detection uses custom loss names (keypoint-only with color classification)
+        # YOLO26 adds box_loss, dfl_loss, and optional rle_loss
         self.loss_names = "pose_loss", "kobj_loss", "cls_loss", "color_loss"
+        # Add size_loss if using triple-branch model
+        if hasattr(self.model.model[-1], 'nc_size'):
+            self.loss_names = self.loss_names + ("size_loss",)
         return yolo.pose.PoseValidator(
             self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
         )

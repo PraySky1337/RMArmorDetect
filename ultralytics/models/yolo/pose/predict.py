@@ -20,8 +20,8 @@ class PosePredictor(DetectionPredictor):
          if not isinstance(orig_imgs, list):
              orig_imgs = ops.convert_torch2numpy_batch(orig_imgs)[..., ::-1]
 
-         results = []
-         for b_idx, (pred_data, orig_img, img_path) in enumerate(zip(
+        results = []
+        for b_idx, (pred_data, orig_img, img_path) in enumerate(zip(
              preds, orig_imgs, self.batch[0]
          )):
              # pred_data shape: (nc_num + nc_color + nk, na)

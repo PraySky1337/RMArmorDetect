@@ -5,6 +5,8 @@
 # Task docs: https://docs.ultralytics.com/tasks/pose
 
 # Parameters
+# NOTE: This is a custom armor detection configuration with dual-branch classification
+# For standard YOLO11 pose, see upstream version
 nc: 28  # nc_num * nc_color = 7 * 4 = 28 (for compatibility)
 nc_num: 7 # number of classes: G, 1, 2, 3, 4, O, B
 nc_color: 4
