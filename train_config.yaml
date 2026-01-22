@@ -1,5 +1,5 @@
 # ================= 基础训练设置 =================
-epochs: 350
+epochs: 275
 imgsz: 416
 batch: 256  # 2 GPUs x 80 per GPU (RTX 3090 24GB, imgsz=416)
 device: "0,1"
@@ -30,7 +30,7 @@ cos_lr: true
 # ================= 数据增强超参数 =================
 # HSV 增强降低（保护颜色特征，避免红蓝混淆）
 hsv_h: 0.005  # 原 0.03
-hsv_s: 0.15  # 原 0.5
+hsv_s: 0.50  # 原 0.5
 hsv_v: 0.30  # 原 0.7 
 
 degrees: 5.0
@@ -44,8 +44,8 @@ fliplr: 0.0
  
 mosaic: 1.0
 mixup: 0.0
-copy_paste: 0.0 
-erasing: 0.1
+copy_paste: 1.0 
+erasing: 0.0
 
 close_mosaic: 75   # 最后75轮关闭mosaic
 

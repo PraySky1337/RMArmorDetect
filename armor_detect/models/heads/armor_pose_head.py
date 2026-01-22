@@ -85,8 +85,8 @@ class ArmorPoseHead(nn.Module):
         self.stride = torch.zeros(self.nl)
         self._stride_initialized = False
 
-        # Number classification branch (8 classes - keep full capacity)
-        c3_num = max(ch[0], min(self.nc_num, 100))
+        # Number classification branch (8 classes - doubled capacity)
+        c3_num = max(ch[0] * 2, self.nc_num)
         self.cv3 = nn.ModuleList(
             nn.Sequential(
                 nn.Sequential(DWConv(x, x, 3), Conv(x, c3_num, 1)),
@@ -96,8 +96,8 @@ class ArmorPoseHead(nn.Module):
             for x in ch
         )
 
-        # Color classification branch (4 classes - reduce to half)
-        c3_color = max(ch[0] // 2, min(self.nc_color * 32, 100))
+        # Color classification branch (4 classes - doubled)
+        c3_color = max(ch[0] // 2, self.nc_color * 32)
         self.cv_color = nn.ModuleList(
             nn.Sequential(
                 nn.Sequential(DWConv(x, x, 3), Conv(x, c3_color, 1)),
@@ -107,8 +107,8 @@ class ArmorPoseHead(nn.Module):
             for x in ch
         )
 
-        # Size classification branch (2 classes - reduce more)
-        c3_size = max(ch[0] // 4, min(self.nc_size * 64, 100))
+        # Size classification branch (2 classes - doubled)
+        c3_size = max(ch[0] // 4, self.nc_size * 64)
         self.cv_size = nn.ModuleList(
             nn.Sequential(
                 nn.Sequential(DWConv(x, x, 3), Conv(x, c3_size, 1)),
@@ -247,6 +247,16 @@ class ArmorPoseHead(nn.Module):
         Returns:
             Decoded keypoints in pixel coordinates (bs, nk, na)
         """
+        # Ensure anchors and strides are initialized (only done in inference mode)
+        if not hasattr(self, 'anchors') or self.anchors.numel() == 0:
+            raise RuntimeError(
+                "Anchors not initialized. Call forward() in inference mode first."
+            )
+        if not hasattr(self, 'strides') or self.strides.numel() == 0:
+            raise RuntimeError(
+                "Strides not initialized. Call forward() in inference mode first."
+            )
+
         ndim = self.kpt_shape[1]
 
         if self.export:
@@ -278,9 +288,9 @@ class ArmorPoseHead(nn.Module):
             imgsz_h = self.shape[2] * self.stride[0]
             imgsz_w = self.shape[3] * self.stride[0]
         else:
-            max_anchor_y = self.anchors[1].max().item()
-            max_anchor_x = self.anchors[0].max().item()
-            max_stride = self.strides.max().item()
+            max_anchor_y = self.anchors[1].max()
+            max_anchor_x = self.anchors[0].max()
+            max_stride = self.strides.max()
             imgsz_h = (max_anchor_y + 1) * max_stride
             imgsz_w = (max_anchor_x + 1) * max_stride
 

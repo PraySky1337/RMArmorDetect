@@ -4,6 +4,7 @@ Custom modules for armor detection.
 These modules can be used in YAML configurations.
 """
 
+from .mobilenetv3 import MobileNetV3Backbone
 from .mobilenetv4 import (
     ConvBNAct,
     MNV4Block,
@@ -19,6 +20,7 @@ __all__ = (
     "MNV4Block",
     "MNV4Stem",
     "MNV4Stage",
+    "MobileNetV3Backbone",
     "MobileNetV4Backbone",
     "ShuffleNetV2Backbone",
     "UIB",

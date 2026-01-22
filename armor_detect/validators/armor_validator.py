@@ -203,22 +203,33 @@ class ArmorValidator(PoseValidator):
         """Finalize and log metrics including size accuracy."""
         super().finalize_metrics(*args, **kwargs)
 
-        # Calculate and store size accuracy (TensorBoard已监控，无需日志)
+        # Calculate and store size accuracy (for logging to TensorBoard via get_stats)
         self.size_accuracy = self.size_correct / max(self.size_total, 1)
 
         # Ensure color_accuracy is initialized (may be missing if parent didn't set it)
         if not hasattr(self, 'color_accuracy'):
             self.color_accuracy = self.color_correct / max(self.color_total, 1)
 
+    def print_results(self):
+        """Print results including size accuracy."""
+        # Call parent to print pose results and color accuracy
+        super().print_results()
+
+        # Print size accuracy
+        if self.size_total > 0:
+            LOGGER.info(f"Size Classification: {self.size_correct}/{self.size_total} = {self.size_accuracy:.4f}")
+
     def get_stats(self) -> dict[str, Any]:
         """Get statistics including size accuracy.
 
-        Returns metrics with 'acc/' prefix for TensorBoard grouping.
+        Returns metrics with consistent naming:
+        - color_accuracy: Color classification accuracy
+        - size_accuracy: Size classification accuracy
+
+        Note: The parent class (PoseValidator) already provides 'color_accuracy',
+        so we only add 'size_accuracy' here to avoid duplicates.
         """
         stats = super().get_stats()
-        # Calculate color accuracy on-the-fly (same as parent class)
-        color_total = getattr(self, 'color_total', 0)
-        color_correct = getattr(self, 'color_correct', 0)
-        stats["acc/color"] = color_correct / max(color_total, 1)
-        stats["acc/size"] = self.size_accuracy
+        # Add size accuracy with consistent naming (matches color_accuracy pattern)
+        stats["size_accuracy"] = self.size_accuracy
         return stats

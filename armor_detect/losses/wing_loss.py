@@ -73,7 +73,7 @@ class WingLoss(nn.Module):
         # Combine and normalize
         total_count = len(small_errors) + len(large_errors)
         if total_count == 0:
-            return torch.tensor(0.0, device=pred.device, requires_grad=True)
+            return torch.zeros(1, device=pred.device, requires_grad=True)
 
         total_loss = loss_small.sum() + loss_large.sum()
         return total_loss / (total_count + 1e-9)
@@ -135,6 +135,6 @@ class WingLossWithMask(WingLoss):
         target_masked = target[mask > 0]
 
         if pred_masked.numel() == 0:
-            return torch.tensor(0.0, device=pred.device, requires_grad=True)
+            return torch.zeros(1, device=pred.device, requires_grad=True)
 
         return super().forward(pred_masked, target_masked)

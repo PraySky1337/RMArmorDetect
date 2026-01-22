@@ -50,9 +50,11 @@ class MobileNetV4Backbone(nn.Module):
 
         in_channels = stem_channels
         for stage_idx in range(1, max_stage + 1):
+            # Note: MNV4Stage determines channels from spec, c1 is only used for
+            # first block's input channels, c2 is ignored (determined from spec)
             stage = MNV4Stage(
-                in_channels,
-                in_channels,
+                c1=in_channels,  # Input channels for first block in stage
+                c2=0,  # Ignored (output determined from spec)
                 n=0,
                 variant=variant,
                 stage_idx=stage_idx,

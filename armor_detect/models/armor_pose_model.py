@@ -17,6 +17,7 @@ from ultralytics.utils import LOGGER
 
 from armor_detect.losses.armor_pose_loss import ArmorPoseLoss
 from armor_detect.models.heads.armor_pose_head import ArmorPoseHead
+from armor_detect.modules.mobilenetv3.backbone import MobileNetV3Backbone
 from armor_detect.modules.mobilenetv4.backbone import MobileNetV4Backbone
 from armor_detect.modules.shufflenetv2.backbone import ShuffleNetV2Backbone
 
@@ -64,6 +65,7 @@ class ArmorPoseModel(DetectionModel):
 
         overrides = {
             "Pose": ArmorPoseHead,
+            "MobileNetV3Backbone": MobileNetV3Backbone,
             "MobileNetV4Backbone": MobileNetV4Backbone,
             "ShuffleNetV2Backbone": ShuffleNetV2Backbone,
         }

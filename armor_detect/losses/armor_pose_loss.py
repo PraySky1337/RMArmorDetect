@@ -251,16 +251,18 @@ class ArmorPoseLoss:
             size_targets = torch.zeros_like(cls_size_pred)
             target_scores_sum = 1  # No positive samples, use 1 to avoid division by zero
 
-        # ========== CLASSIFICATION LOSSES WITH FOCAL LOSS (ALL ANCHORS) ==========
+        # ========== CLASSIFICATION LOSSES WITH WEIGHTED BCE (ALL ANCHORS) ==========
         # Compute classification loss on ALL anchors to constrain negative samples
         # Negative samples have target=0.0 (from initialization at lines 194-196)
+        # Foreground: weight=1.0, Background: weight=bg_weight (soft constraint)
         # This follows v8DetectionLoss pattern (ultralytics/utils/loss.py line 433)
 
-        # Number classification loss (Focal Loss) - on ALL anchors
+        # Build weight mask: fg=1.0, bg=bg_weight for Number classification
+        num_weight = fg_mask.float().unsqueeze(-1) * (1.0 - self.bg_weight) + self.bg_weight
+
+        # Number classification loss (weighted BCE) - on ALL anchors
         cls_loss = self.bce_num(cls_num_pred, num_class_targets)  # (bs, na, nc_num)
-        pt = torch.exp(-cls_loss)
-        focal_weight = (1 - pt) ** self.focal_gamma
-        loss[2] = (cls_loss * focal_weight).sum() / target_scores_sum
+        loss[2] = (cls_loss * num_weight).sum() / target_scores_sum
 
         # Color classification loss - on ALL anchors with weighted BCE
         # Foreground: weight=1.0, Background: weight=bg_weight (soft constraint)

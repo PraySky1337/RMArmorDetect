@@ -1,0 +1,70 @@
+# Armor Detection Model Configuration
+# MobileNetV3 backbone with YOLO11 head
+
+# Model scale: n(nano), s(small), m(medium), l(large), x(xlarge)
+scale: 's'
+
+# Class configuration
+nc: 64
+nc_num: 8
+nc_color: 4
+nc_size: 2
+kpt_shape: [4, 2]
+
+# WingLoss parameters for keypoint regression
+wing_omega: 30.0
+wing_epsilon: 2.0
+
+# Loss weights
+pose: 2.0
+kobj: 1.5
+cls: 2.0
+color: 1.5
+size: 1.0
+
+# Focal Loss parameters
+focal_gamma: 1.0
+
+# Background weight for color/size classification
+bg_weight: 0.3
+
+# Model scaling constants
+# Format: [depth, width, max_channels]
+scales:
+  n: [0.375, 0.1875, 512]
+  s: [0.50, 0.50, 1024]
+  m: [0.50, 1.00, 512]
+  l: [1.00, 1.00, 512]
+  x: [1.00, 1.50, 512]
+
+# MobileNetV3 backbone outputs P3/P4/P5 as a list
+# Variant: 'small' or 'large'
+# width_mult: 0.5, 0.75, 1.0, 1.2
+# out_indices for small: Stage 4 (P3/8), Stage 7 (P4/16), Stage 9 (P5/32)
+backbone:
+  - [-1, 1, MobileNetV3Backbone, ['small', 0.75, [4, 7, 9]]]
+  # Index channels assume variant='small', width_mult=0.75
+  # Actual channels: [32, 40, 72] for stages (4, 7, 9)
+  - [0, 1, Index, [32, 0]]
+  - [0, 1, Index, [40, 1]]
+  - [0, 1, Index, [72, 2]]
+
+# YOLO11 Head with FPN + PAN structure (adjusted for MobileNetV3 channels)
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 2], 1, Concat, [1]]
+  - [-1, 1, C3k2, [128, False]]
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 1], 1, Concat, [1]]
+  - [-1, 1, C3k2, [64, False]]
+
+  - [-1, 1, Conv, [64, 3, 2]]
+  - [[-1, 6], 1, Concat, [1]]
+  - [-1, 1, C3k2, [128, False]]
+
+  - [-1, 1, Conv, [128, 3, 2]]
+  - [[-1, 3], 1, Concat, [1]]
+  - [-1, 1, C3k2, [256, True]]
+
+  - [[9, 12, 15], 1, Pose, [8, 4, 2, [4, 2]]]
