@@ -398,6 +398,13 @@ def check_det_dataset(dataset: str, autodownload: bool = True) -> dict[str, Any]
         (dict[str, Any]): Parsed dataset information and paths.
     """
     file = check_file(dataset)
+    debug = str(os.getenv("YOLO_DATA_DEBUG", "")).lower() in {"1", "true", "yes", "y"}
+    if debug:
+        try:
+            resolved = str(Path(file).resolve())
+        except Exception:
+            resolved = str(file)
+        LOGGER.info(f"DATA DEBUG (file): input={dataset}, checked_file={file}, resolved={resolved}")
 
     # Download (optional)
     extract_dir = ""
@@ -408,6 +415,13 @@ def check_det_dataset(dataset: str, autodownload: bool = True) -> dict[str, Any]
 
     # Read YAML
     data = YAML.load(file, append_filename=True)  # dictionary
+    if debug:
+        raw_names = data.get("names")
+        raw_names_len = len(raw_names) if isinstance(raw_names, (list, dict)) else None
+        LOGGER.info(
+            f"DATA DEBUG (raw): dataset={dataset}, yaml_file={data.get('yaml_file', file)}, "
+            f"nc={data.get('nc')}, names_len={raw_names_len}"
+        )
 
     # Checks
     for k in "train", "val":
@@ -429,6 +443,18 @@ def check_det_dataset(dataset: str, autodownload: bool = True) -> dict[str, Any]
 
     data["names"] = check_class_names(data["names"])
     data["channels"] = data.get("channels", 3)  # get image channels, default to 3
+    if debug:
+        names = data.get("names", {})
+        if isinstance(names, dict) and names:
+            keys = list(names.keys())
+            key_range = f"{min(keys)}-{max(keys)}"
+            sample = list(names.items())[:5]
+        else:
+            key_range = "n/a"
+            sample = []
+        LOGGER.info(
+            f"DATA DEBUG (resolved): nc={data.get('nc')}, names_len={len(names)}, keys={key_range}, sample={sample}"
+        )
 
     # Resolve paths
     path = Path(extract_dir or data.get("path") or Path(data.get("yaml_file", "")).parent)  # dataset root
@@ -446,6 +472,25 @@ def check_det_dataset(dataset: str, autodownload: bool = True) -> dict[str, Any]
                 data[k] = str(x)
             else:
                 data[k] = [str((path / x).resolve()) for x in data[k]]
+    if debug:
+        def _summarize_paths(value: Any) -> str | list[str] | None:
+            if value is None:
+                return None
+            if isinstance(value, list):
+                head = [str(v) for v in value[:3]]
+                if len(value) > 3:
+                    head.append(f"...(+{len(value) - 3})")
+                return head
+            return str(value)
+
+        LOGGER.info(
+            "DATA DEBUG (paths): "
+            f"path={data.get('path')}, "
+            f"train={_summarize_paths(data.get('train'))}, "
+            f"val={_summarize_paths(data.get('val'))}, "
+            f"test={_summarize_paths(data.get('test'))}, "
+            f"minival={_summarize_paths(data.get('minival'))}"
+        )
 
     # Parse YAML
     val, s = (data.get(x) for x in ("val", "download"))

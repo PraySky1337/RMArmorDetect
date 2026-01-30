@@ -29,7 +29,7 @@ from ultralytics.data.loaders import (
     autocast_list,
 )
 from ultralytics.data.utils import IMG_FORMATS, VID_FORMATS
-from ultralytics.utils import RANK, colorstr
+from ultralytics.utils import LOGGER, RANK, colorstr
 from ultralytics.utils.checks import check_file
 from ultralytics.utils.torch_utils import TORCH_2_0
 
@@ -232,6 +232,13 @@ def build_yolo_dataset(
     multi_modal: bool = False,
 ) -> Dataset:
     """Build and return a YOLO dataset based on configuration parameters."""
+    if str(os.getenv("YOLO_DATA_DEBUG", "")).lower() in {"1", "true", "yes", "y"} and RANK in {-1, 0}:
+        names = data.get("names", {})
+        names_len = len(names) if isinstance(names, (list, dict)) else None
+        LOGGER.info(
+            f"{colorstr(f'{mode}: ')}DATA DEBUG (build): img_path={img_path}, "
+            f"yaml_file={data.get('yaml_file')}, nc={data.get('nc')}, names_len={names_len}"
+        )
     dataset = YOLOMultiModalDataset if multi_modal else YOLODataset
     return dataset(
         img_path=img_path,

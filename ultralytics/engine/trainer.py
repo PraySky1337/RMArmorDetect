@@ -666,6 +666,26 @@ class BaseTrainer:
             LOGGER.info("Overriding class names with single class.")
             data["names"] = {0: "item"}
             data["nc"] = 1
+        if str(os.getenv("YOLO_DATA_DEBUG", "")).lower() in {"1", "true", "yes", "y"} and LOCAL_RANK in {-1, 0}:
+            names = data.get("names", {})
+            names_len = len(names) if isinstance(names, (list, dict)) else None
+
+            def _summarize_path(value):
+                if value is None:
+                    return None
+                if isinstance(value, list):
+                    head = [str(v) for v in value[:3]]
+                    if len(value) > 3:
+                        head.append(f"...(+{len(value) - 3})")
+                    return head
+                return str(value)
+
+            LOGGER.info(
+                "DATA DEBUG (trainer data): "
+                f"task={self.args.task}, data={self.args.data}, "
+                f"yaml_file={data.get('yaml_file')}, nc={data.get('nc')}, names_len={names_len}, "
+                f"train={_summarize_path(data.get('train'))}, val={_summarize_path(data.get('val'))}"
+            )
         return data
 
     def setup_model(self):
