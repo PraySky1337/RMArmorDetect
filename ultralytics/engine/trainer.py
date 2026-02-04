@@ -54,6 +54,8 @@ from ultralytics.utils.torch_utils import (
     attempt_compile,
     autocast,
     convert_optimizer_state_dict_to_fp16,
+    get_flops,
+    get_num_params,
     init_seeds,
     one_cycle,
     select_device,
@@ -371,6 +373,13 @@ class BaseTrainer:
         self.epoch_time_start = time.time()
         self.train_time_start = time.time()
         self.run_callbacks("on_train_start")
+
+        # Evaluate model parameters and GFLOPs at the start of training
+        if RANK in {-1, 0}:
+            n_params = get_num_params(self.model) / 1e6  # Convert to millions
+            n_flops = get_flops(self.model, imgsz=self.args.imgsz)
+            LOGGER.info(f"{colorstr('bold', 'Model Info:')} {n_params:.2f}M params, {n_flops:.2f} GFLOPs")
+
         LOGGER.info(
             f"Image sizes {self.args.imgsz} train, {self.args.imgsz} val\n"
             f"Using {self.train_loader.num_workers * (self.world_size or 1)} dataloader workers\n"

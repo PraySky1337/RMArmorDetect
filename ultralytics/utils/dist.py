@@ -47,15 +47,37 @@ def generate_ddp_file(trainer):
     """
     module, name = f"{trainer.__class__.__module__}.{trainer.__class__.__name__}".rsplit(".", 1)
 
+    # Get trainer args and handle augmentations for DDP compatibility
+    # Serialize augmentations to repr strings, which will be reconstructed in the DDP worker
+    overrides_dict = vars(trainer.args).copy()
+    augmentations_repr_list = None
+    if overrides_dict.get("augmentations") is not None:
+        # Serialize Albumentations transforms as their repr strings
+        augmentations_repr_list = [repr(t) for t in overrides_dict["augmentations"]]
+    overrides_dict.pop("augmentations", None)  # Remove augmentations from overrides
+
+    # Build augmentations reconstruction code if needed
+    augmentations_code = ""
+    if augmentations_repr_list is not None:
+        augmentations_code = f"""
+    # Reconstruct augmentations from repr strings
+    import albumentations as A
+    augmentations_repr = {augmentations_repr_list}
+    # Include albumentations module exports in eval namespace for transform reconstruction
+    eval_namespace = {{**vars(A), "A": A}}
+    augmentations = [eval(aug, eval_namespace) for aug in augmentations_repr]
+    overrides["augmentations"] = augmentations
+"""
+
     content = f"""
 # Ultralytics Multi-GPU training temp file (should be automatically deleted after use)
 from pathlib import Path, PosixPath  # For model arguments stored as Path instead of str
-overrides = {vars(trainer.args)}
+overrides = {overrides_dict}
 
 if __name__ == "__main__":
     from {module} import {name}
     from ultralytics.utils import DEFAULT_CFG_DICT
-
+{augmentations_code}
     cfg = DEFAULT_CFG_DICT.copy()
     cfg.update(save_dir='')   # handle the extra key 'save_dir'
     trainer = {name}(cfg=cfg, overrides=overrides)
