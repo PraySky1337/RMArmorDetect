@@ -1535,6 +1535,9 @@ def parse_model(d, ch, verbose=True):
     nc, act, scales, end2end = (d.get(x) for x in ("nc", "activation", "scales", "end2end"))
     reg_max = d.get("reg_max", 16)
     depth, width, kpt_shape = (d.get(x, 1.0) for x in ("depth_multiple", "width_multiple", "kpt_shape"))
+    num_color = d.get("num_color", 4)  # for Pose26 attribute branches
+    num_size = d.get("num_size", 2)
+    num_obj = d.get("num_obj", 8)
     scale = d.get("scale")
     if scales:
         if not scale:

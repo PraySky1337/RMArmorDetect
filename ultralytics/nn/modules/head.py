@@ -668,18 +668,63 @@ class Pose26(Pose):
         >>> outputs = pose(x)
     """
 
-    def __init__(self, nc: int = 80, kpt_shape: tuple = (17, 3), reg_max=16, end2end=False, ch: tuple = ()):
+    def __init__(
+        self,
+        nc: int = 8,
+        kpt_shape: tuple = (17, 3),
+        num_color: int = 4,
+        num_size: int = 2,
+        num_obj: int = 8,
+        reg_max=16,
+        end2end=False,
+        ch: tuple = (),
+    ):
         """Initialize YOLO network with default parameters and Convolutional Layers.
 
         Args:
-            nc (int): Number of classes.
+            nc (int): Number of classes (legacy, kept for compatibility).
             kpt_shape (tuple): Number of keypoints, number of dims (2 for x,y or 3 for x,y,visible).
+            num_color (int): Number of color attribute classes.
+            num_size (int): Number of size attribute classes.
+            num_obj (int): Number of object type classes.
             reg_max (int): Maximum number of DFL channels.
             end2end (bool): Whether to use end-to-end NMS-free detection.
             ch (tuple): Tuple of channel sizes from backbone feature maps.
         """
         super().__init__(nc, kpt_shape, reg_max, end2end, ch)
         self.flow_model = RealNVP()
+
+        # 三属性分支维度
+        self.num_color = num_color
+        self.num_size = num_size
+        self.num_obj = num_obj
+
+        # 三属性分支头 (参考Detect.cv3的非legacy结构)
+        c3 = max(ch[0], min(max(num_color, num_size, num_obj), 100))
+        self.cv3_color = nn.ModuleList(
+            nn.Sequential(
+                nn.Sequential(DWConv(x, x, 3), Conv(x, c3, 1)),
+                nn.Sequential(DWConv(c3, c3, 3), Conv(c3, c3, 1)),
+                nn.Conv2d(c3, num_color, 1),
+            )
+            for x in ch
+        )
+        self.cv3_size = nn.ModuleList(
+            nn.Sequential(
+                nn.Sequential(DWConv(x, x, 3), Conv(x, c3, 1)),
+                nn.Sequential(DWConv(c3, c3, 3), Conv(c3, c3, 1)),
+                nn.Conv2d(c3, num_size, 1),
+            )
+            for x in ch
+        )
+        self.cv3_obj = nn.ModuleList(
+            nn.Sequential(
+                nn.Sequential(DWConv(x, x, 3), Conv(x, c3, 1)),
+                nn.Sequential(DWConv(c3, c3, 3), Conv(c3, c3, 1)),
+                nn.Conv2d(c3, num_obj, 1),
+            )
+            for x in ch
+        )
 
         c4 = max(ch[0] // 4, kpt_shape[0] * (kpt_shape[1] + 2))
         self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3)) for x in ch)
@@ -689,6 +734,9 @@ class Pose26(Pose):
         self.cv4_sigma = nn.ModuleList(nn.Conv2d(c4, self.nk_sigma, 1) for _ in ch)
 
         if end2end:
+            self.one2one_cv3_color = copy.deepcopy(self.cv3_color)
+            self.one2one_cv3_size = copy.deepcopy(self.cv3_size)
+            self.one2one_cv3_obj = copy.deepcopy(self.cv3_obj)
             self.one2one_cv4 = copy.deepcopy(self.cv4)
             self.one2one_cv4_kpts = copy.deepcopy(self.cv4_kpts)
             self.one2one_cv4_sigma = copy.deepcopy(self.cv4_sigma)
@@ -698,7 +746,9 @@ class Pose26(Pose):
         """Returns the one-to-many head components, here for backward compatibility."""
         return dict(
             box_head=self.cv2,
-            cls_head=self.cv3,
+            color_head=self.cv3_color,
+            size_head=self.cv3_size,
+            obj_head=self.cv3_obj,
             pose_head=self.cv4,
             kpts_head=self.cv4_kpts,
             kpts_sigma_head=self.cv4_sigma,
@@ -709,7 +759,9 @@ class Pose26(Pose):
         """Returns the one-to-one head components."""
         return dict(
             box_head=self.one2one_cv2,
-            cls_head=self.one2one_cv3,
+            color_head=self.one2one_cv3_color,
+            size_head=self.one2one_cv3_size,
+            obj_head=self.one2one_cv3_obj,
             pose_head=self.one2one_cv4,
             kpts_head=self.one2one_cv4_kpts,
             kpts_sigma_head=self.one2one_cv4_sigma,
@@ -719,27 +771,102 @@ class Pose26(Pose):
         self,
         x: list[torch.Tensor],
         box_head: torch.nn.Module,
-        cls_head: torch.nn.Module,
+        color_head: torch.nn.Module,
+        size_head: torch.nn.Module,
+        obj_head: torch.nn.Module,
         pose_head: torch.nn.Module,
         kpts_head: torch.nn.Module,
         kpts_sigma_head: torch.nn.Module,
     ) -> torch.Tensor:
-        """Concatenates and returns predicted bounding boxes, class probabilities, and keypoints."""
-        preds = Detect.forward_head(self, x, box_head, cls_head)
+        """Concatenates and returns predicted boxes and three attribute scores."""
+        bs = x[0].shape[0]
+
+        # box预测
+        boxes = torch.cat([box_head[i](x[i]).view(bs, 4 * self.reg_max, -1) for i in range(self.nl)], dim=-1)
+
+        # 三个属性分支预测
+        color_scores = torch.cat([color_head[i](x[i]).view(bs, self.num_color, -1) for i in range(self.nl)], dim=-1)
+        size_scores = torch.cat([size_head[i](x[i]).view(bs, self.num_size, -1) for i in range(self.nl)], dim=-1)
+        obj_scores = torch.cat([obj_head[i](x[i]).view(bs, self.num_obj, -1) for i in range(self.nl)], dim=-1)
+
+        preds = dict(boxes=boxes, color=color_scores, size=size_scores, obj=obj_scores, feats=x)
+
+        # pose相关预测
         if pose_head is not None:
-            bs = x[0].shape[0]  # batch size
             features = [pose_head[i](x[i]) for i in range(self.nl)]
             preds["kpts"] = torch.cat([kpts_head[i](features[i]).view(bs, self.nk, -1) for i in range(self.nl)], 2)
             if self.training:
                 preds["kpts_sigma"] = torch.cat(
                     [kpts_sigma_head[i](features[i]).view(bs, self.nk_sigma, -1) for i in range(self.nl)], 2
                 )
+
         return preds
+
+    def _inference(self, x: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Decode predicted boxes and concatenate with attribute scores."""
+        # 解码boxes (复用Detect._get_decode_boxes)
+        dbox = self._get_decode_boxes(x)
+
+        # 三个属性分支的sigmoid
+        color_sig = x["color"].sigmoid()
+        size_sig = x["size"].sigmoid()
+        obj_sig = x["obj"].sigmoid()
+
+        # 关键点解码
+        kpts_decoded = self.kpts_decode(x["kpts"])
+
+        # 拼接输出: [boxes, color, size, obj, kpts]
+        return torch.cat([dbox, color_sig, size_sig, obj_sig, kpts_decoded], dim=1)
+
+    def bias_init(self):
+        """Initialize Pose26 biases for three attribute branches."""
+        # one2many heads
+        for i, (a, b, c, d) in enumerate(
+            zip(
+                self.one2many["box_head"],
+                self.one2many["color_head"],
+                self.one2many["size_head"],
+                self.one2many["obj_head"],
+            )
+        ):
+            a[-1].bias.data[:] = 2.0  # box
+            b[-1].bias.data[: self.num_color] = math.log(
+                5 / self.num_color / (640 / self.stride[i]) ** 2
+            )  # color
+            c[-1].bias.data[: self.num_size] = math.log(
+                5 / self.num_size / (640 / self.stride[i]) ** 2
+            )  # size
+            d[-1].bias.data[: self.num_obj] = math.log(
+                5 / self.num_obj / (640 / self.stride[i]) ** 2
+            )  # obj
+        # one2one heads
+        if self.end2end:
+            for i, (a, b, c, d) in enumerate(
+                zip(
+                    self.one2one["box_head"],
+                    self.one2one["color_head"],
+                    self.one2one["size_head"],
+                    self.one2one["obj_head"],
+                )
+            ):
+                a[-1].bias.data[:] = 2.0  # box
+                b[-1].bias.data[: self.num_color] = math.log(
+                    5 / self.num_color / (640 / self.stride[i]) ** 2
+                )  # color
+                c[-1].bias.data[: self.num_size] = math.log(
+                    5 / self.num_size / (640 / self.stride[i]) ** 2
+                )  # size
+                d[-1].bias.data[: self.num_obj] = math.log(
+                    5 / self.num_obj / (640 / self.stride[i]) ** 2
+                )  # obj
 
     def fuse(self) -> None:
         """Remove the one2many head for inference optimization."""
         super().fuse()
-        self.cv4_kpts = self.cv4_sigma = self.flow_model = self.one2one_cv4_sigma = None
+        self.cv4_kpts = self.cv4_sigma = self.flow_model = None
+        self.cv3_color = self.cv3_size = self.cv3_obj = None
+        self.one2one_cv4_sigma = self.one2one_cv3_color = None
+        self.one2one_cv3_size = self.one2one_cv3_obj = None
 
     def kpts_decode(self, kpts: torch.Tensor) -> torch.Tensor:
         """Decode keypoints from predictions."""

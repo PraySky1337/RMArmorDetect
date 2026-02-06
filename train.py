@@ -3,7 +3,7 @@ import albumentations as A
 
 def main():
     model = YOLO(
-        "/home/rry/ultralytics/ultralytics/cfg/models/26/yolo26n-pose_dwconv.yaml"
+        "/home/praysky/ultralytics/ultralytics/cfg/models/26/yolo26n-pose.yaml"
     )  # load a pretrained model (recommended for training)
 
     # ========== 自定义 Albumentations 增强 ==========
@@ -26,13 +26,13 @@ def main():
 
 
     model.train(
-    data="/home/rry/ultralytics/data.yaml",
+    data="/home/praysky/ultralytics/data.yaml",
     task="pose",
-    epochs=150,
-    batch=64,
+    epochs=10,
+    batch=4,
     imgsz=640,
-    device="0,1",
-    workers=32,
+    device="0",
+    workers=4,
     pretrained=True,
     seed=0,
     deterministic=True,
@@ -77,7 +77,7 @@ def main():
     amp=True,
     val=True,
     plots=True,
-    project="/home/rry/ultralytics/runs",
+    project="/home/praysky/ultralytics/runs",
     name="train_pose_strong_aug",
     )
 

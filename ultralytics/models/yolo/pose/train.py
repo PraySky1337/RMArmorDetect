@@ -94,6 +94,9 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
         self.loss_names = "box_loss", "pose_loss", "kobj_loss", "cls_loss", "dfl_loss"
         if getattr(unwrap_model(self.model).model[-1], "flow_model", None) is not None:
             self.loss_names += ("rle_loss",)
+        # Pose26 三属性分支的额外 loss
+        if hasattr(unwrap_model(self.model).model[-1], "num_color"):
+            self.loss_names += ("color_loss", "size_loss")
         return yolo.pose.PoseValidator(
             self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
         )
