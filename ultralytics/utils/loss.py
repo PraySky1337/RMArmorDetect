@@ -831,93 +831,76 @@ class PoseLoss26(v8PoseLoss):
         self.num_size = getattr(head, "num_size", 2)
         self.num_obj = getattr(head, "num_obj", 8)
 
-        # 计算flatten后的总类别数（用于解码）
-        # 映射规则：cls_id = color_id * (num_size * num_obj) + size_id * num_obj + obj_id
-        self.num_color_size = self.num_size * self.num_obj  # 每个color对应的类别数
-
         # 重要：更新self.nc和assigner的num_classes为num_obj
         # 因为Pose26使用obj分支进行target assignment，而不是原来的nc
         self.nc = self.num_obj
         self.assigner.num_classes = self.num_obj
+        attr_warmup_epochs = (
+            self.hyp.get("attr_warmup_epochs", 0.0) if isinstance(self.hyp, dict) else getattr(self.hyp, "attr_warmup_epochs", 0.0)
+        )
+        self.attr_warmup_epochs = max(float(attr_warmup_epochs), 0.0)
+        self._attr_warmup_step = 0
+
+    def _attr_warmup_gain(self) -> float:
+        """Linearly ramp color/size branch gains in early training epochs."""
+        if self.attr_warmup_epochs <= 0:
+            return 1.0
+        return min(self._attr_warmup_step / self.attr_warmup_epochs, 1.0)
+
+    def update(self) -> None:
+        """Advance warmup step once per epoch (called by trainer via criterion.update())."""
+        self._attr_warmup_step += 1
 
     def loss(self, preds: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """Calculate the total loss and detach it for pose estimation."""
+        if "color_ids" not in batch or "size_ids" not in batch:
+            raise KeyError(
+                "Pose26 expects `color_ids` and `size_ids` in batch. "
+                "Please set `pose26_attr_label: true` and use `color size obj xywh kpts...` labels."
+            )
+
         pred_kpts = preds["kpts"].permute(0, 2, 1).contiguous()
 
-        # 扩展loss维度: box, cls, dfl, kpt_loc, kpt_vis, color, size, obj, (rle)
+        # loss layout:
+        # no-RLE -> [box, kpt_loc, kpt_vis, cls(obj), dfl, color, size]
+        # with-RLE -> [box, kpt_loc, kpt_vis, cls(obj), dfl, rle, color, size]
         base_loss_size = 6 if self.rle_loss else 5
-        total_loss_size = base_loss_size + 3
+        total_loss_size = base_loss_size + 2
         loss = torch.zeros(total_loss_size, device=self.device)
 
-        # === 拆分64维cls为三属性 ===
-        # 映射规则：cls_id = color_id * (num_size * num_obj) + size_id * num_obj + obj_id
-        # 反向解码：
-        #   color_id = cls_id // (num_size * num_obj)
-        #   size_id = (cls_id % (num_size * num_obj)) // num_obj
-        #   obj_id = cls_id % num_obj
-        original_cls = batch["cls"].clone()  # 保存原始cls用于解码
-        cls_decoded = original_cls[:, 0].long()  # (N,) 取第一列（如果有多列）
-
-        color_ids = cls_decoded // self.num_color_size  # 0-3
-        size_ids = (cls_decoded % self.num_color_size) // self.num_obj  # 0-1
-        obj_ids = cls_decoded % self.num_obj  # 0-7
-
-        # 修改batch["cls"]为obj_id（用于target assignment）
-        batch["cls"] = obj_ids.view(-1, 1)
-
-        # 保存color_ids和size_ids到batch（用于后续计算color和size的loss）
-        batch["color_ids"] = color_ids.view(-1, 1)
-        batch["size_ids"] = size_ids.view(-1, 1)
-
-        # 使用obj分支进行target assignment
+        # Use obj branch for assignment (`batch["cls"]` is obj_id in new label format).
         pred_scores_obj = preds["obj"].permute(0, 2, 1).contiguous()
 
-        # 为了复用父类的get_assigned_targets_and_loss，临时构建preds字典
         preds_for_assign = {
             "boxes": preds["boxes"],
-            "scores": pred_scores_obj,  # 使用obj分支
+            "scores": pred_scores_obj,
             "feats": preds["feats"],
         }
         (fg_mask, target_gt_idx, target_bboxes, anchor_points, stride_tensor), det_loss, _ = (
             self.get_assigned_targets_and_loss(preds_for_assign, batch)
         )
 
-        # det_loss返回的是 [box_loss, cls_loss(obj), dfl_loss]
-        # 我们需要重新映射：
-        # loss[0] = box_loss
-        # loss[1] = kpt_loc_loss (后面计算)
-        # loss[2] = kpt_vis_loss (后面计算)
-        # loss[3] = cls_loss (保留原obj loss用于兼容)
-        # loss[4] = dfl_loss
-        # loss[5] = rle_loss (如果有)
-        # loss[6+] = 三属性分支loss
-
         loss[0], loss[3], loss[4] = det_loss[0], det_loss[1], det_loss[2]
 
-        # 获取target_scores用于三属性分支的soft label
-        # 需要重新调用assigner获取target_scores（get_assigned_targets_and_loss没有返回）
-        # 注意：assigner期望的scores形状是(batch, num_obj, num_anchors)，即原始的preds["obj"]
+        # Re-run assigner to get target scores for branch loss normalization.
         pred_distri = preds["boxes"].permute(0, 2, 1).contiguous()
-        anchor_points, stride_tensor = make_anchors(preds["feats"], self.stride, 0.5)
+        anchor_points_assign, stride_tensor_assign = make_anchors(preds["feats"], self.stride, 0.5)
 
         dtype = pred_scores_obj.dtype
         batch_size = pred_scores_obj.shape[0]
         imgsz = torch.tensor(preds["feats"][0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]
 
-        # Targets (使用obj_ids)
         targets = torch.cat((batch["batch_idx"].view(-1, 1), batch["cls"].view(-1, 1), batch["bboxes"]), 1)
         targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
         gt_labels, gt_bboxes = targets.split((1, 4), 2)
         mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)
 
-        # Pboxes
-        pred_bboxes = self.bbox_decode(anchor_points, pred_distri)
+        pred_bboxes = self.bbox_decode(anchor_points_assign, pred_distri)
 
-        # 使用原始形状的preds["obj"]调用assigner (batch, num_obj, num_anchors)
-        _, target_bboxes, target_scores_obj, fg_mask, target_gt_idx = self.assigner(
+        _, _, target_scores_obj, fg_mask_assign, target_gt_idx_assign = self.assigner(
             preds["obj"].detach().sigmoid(),
-            (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
-            anchor_points * stride_tensor,
+            (pred_bboxes.detach() * stride_tensor_assign).type(gt_bboxes.dtype),
+            anchor_points_assign * stride_tensor_assign,
             gt_labels,
             gt_bboxes,
             mask_gt,
@@ -925,60 +908,37 @@ class PoseLoss26(v8PoseLoss):
 
         target_scores_sum = max(target_scores_obj.sum(), 1)
 
-        # 计算三个属性分支的BCE loss
         pred_color = preds["color"].permute(0, 2, 1).contiguous()
         pred_size = preds["size"].permute(0, 2, 1).contiguous()
-        pred_obj = preds["obj"].permute(0, 2, 1).contiguous()
+        target_scores_color = torch.zeros_like(pred_color)  # (B, A, num_color)
+        target_scores_size = torch.zeros_like(pred_size)  # (B, A, num_size)
 
-        # obj loss (已在det_loss[1]中计算，这里保留索引3的值)
+        fg_batch_idx, fg_anchor_idx = torch.where(fg_mask_assign)
+        if fg_batch_idx.numel():
+            gt_local_idx = target_gt_idx_assign[fg_batch_idx, fg_anchor_idx].long()
+            gt_batch_idx = batch["batch_idx"].view(-1).long()
+            gt_counts = gt_batch_idx.bincount(minlength=batch_size)
+            gt_offsets = torch.cat((gt_counts.new_zeros(1), gt_counts.cumsum(0)[:-1]))
+            gt_global_idx = gt_offsets[fg_batch_idx] + gt_local_idx
 
-        # 为color和size分支构建对应的target_scores
-        # 由于color/size/obj共享相同的assignment，我们根据color_ids/size_ids重新构建target_scores
+            color_labels = batch["color_ids"].view(-1).long()[gt_global_idx]
+            size_labels = batch["size_ids"].view(-1).long()[gt_global_idx]
 
-        # 获取分配给每个anchor的gt_idx
-        # target_gt_idx: (B, H*W), 每个anchor分配的gt索引（-1表示背景）
-        assigned_gt_idx = target_gt_idx  # (B, H*W)
+            target_scores_color[fg_batch_idx, fg_anchor_idx] = F.one_hot(color_labels, num_classes=self.num_color).to(
+                dtype
+            )
+            target_scores_size[fg_batch_idx, fg_anchor_idx] = F.one_hot(size_labels, num_classes=self.num_size).to(
+                dtype
+            )
 
-        # 构建color和size的target_scores
-        # 对于每个anchor，获取其分配的gt的color_id/size_id，然后构建one-hot向量
-        target_scores_color = torch.zeros_like(pred_color)  # (B, H*W, num_color)
-        target_scores_size = torch.zeros_like(pred_size)    # (B, H*W, num_size)
-
-        # 只处理前景anchor
-        fg_mask_flat = fg_mask  # (B, H*W)
-        valid_gt_idx = assigned_gt_idx[fg_mask_flat]  # 前景anchor分配的gt索引
-
-        if len(valid_gt_idx) > 0:
-            # 获取color_ids和size_ids
-            # batch_idx corresponding to fg_mask
-            batch_indices = torch.where(fg_mask_flat)[0]
-            gt_indices = valid_gt_idx.long()
-
-            # color_ids: (num_gts, 1)，需要根据gt_indices获取
-            # 首先需要获取每个gt的batch_idx
-            gt_batch_idx = batch["batch_idx"].view(-1)  # (num_gts,)
-
-            # 为每个gt找到对应的color_id和size_id
-            # batch["color_ids"]和batch["size_ids"]的形状是(num_gts, 1)
-            color_labels = batch["color_ids"][gt_indices, 0]  # (num_fg,)
-            size_labels = batch["size_ids"][gt_indices, 0]    # (num_fg,)
-
-            # 构建one-hot target
-            target_scores_color[fg_mask_flat] = torch.nn.functional.one_hot(
-                color_labels.long(), num_classes=self.num_color
-            ).to(dtype)
-            target_scores_size[fg_mask_flat] = torch.nn.functional.one_hot(
-                size_labels.long(), num_classes=self.num_size
-            ).to(dtype)
-
-        # color loss
-        loss[base_loss_size + 0] = (
-            self.bce(pred_color, target_scores_color).sum() / target_scores_sum * self.hyp.cls
+        color_loss_idx = base_loss_size
+        size_loss_idx = base_loss_size + 1
+        attr_warmup_gain = self._attr_warmup_gain()
+        loss[color_loss_idx] = (
+            self.bce(pred_color, target_scores_color).sum() / target_scores_sum * self.hyp.cls * attr_warmup_gain
         )
-
-        # size loss
-        loss[base_loss_size + 1] = (
-            self.bce(pred_size, target_scores_size).sum() / target_scores_sum * self.hyp.cls
+        loss[size_loss_idx] = (
+            self.bce(pred_size, target_scores_size).sum() / target_scores_sum * self.hyp.cls * attr_warmup_gain
         )
 
         batch_size = pred_kpts.shape[0]
@@ -1018,7 +978,7 @@ class PoseLoss26(v8PoseLoss):
         if self.rle_loss is not None:
             loss[5] *= self.hyp.rle  # rle gain
 
-        return loss * batch_size, loss.detach()  # loss(box, cls, dfl, kpt_location, kpt_visibility, color, size, obj)
+        return loss * batch_size, loss.detach()
 
     @staticmethod
     def kpts_decode(anchor_points: torch.Tensor, pred_kpts: torch.Tensor) -> torch.Tensor:
@@ -1339,6 +1299,10 @@ class E2ELoss:
         self.updates += 1
         self.o2m = self.decay(self.updates)
         self.o2o = max(self.total - self.o2m, 0)
+        if hasattr(self.one2many, "update"):
+            self.one2many.update()
+        if hasattr(self.one2one, "update"):
+            self.one2one.update()
 
     def decay(self, x) -> float:
         """Calculate the decayed weight for one-to-many loss based on the current update step."""
